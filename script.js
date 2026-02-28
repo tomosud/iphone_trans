@@ -1,13 +1,16 @@
 const sourceText = document.getElementById("sourceText");
-const displayText = document.getElementById("displayText");
+const finalText = document.getElementById("finalText");
+const liveText = document.getElementById("liveText");
 const clearButton = document.getElementById("clearButton");
 
-const placeholderText = "ここにリアルタイム表示されます。";
-const renderDelayMs = 500;
-const idleCommitMs = 1400;
-const maxVisibleChunks = 6;
-const preferredChunkLength = 160;
-const maxChunkLength = 220;
+const placeholderText = "ここに確定したテキストが表示されます。";
+const livePlaceholderText = "入力中のテキスト";
+const renderDelayMs = 900;
+const idleCommitMs = 1800;
+const maxVisibleChunks = 2;
+const preferredChunkLength = 120;
+const maxChunkLength = 170;
+const livePreviewWordLimit = 10;
 
 let committedText = "";
 let committedChunks = [];
@@ -17,6 +20,20 @@ let idleCommitTimer = null;
 
 function normalizeText(value) {
   return value.replace(/\s+/g, " ").trim();
+}
+
+function getLivePreviewText(value) {
+  const normalized = normalizeText(value);
+  if (!normalized) {
+    return "";
+  }
+
+  const words = normalized.split(" ");
+  if (words.length <= livePreviewWordLimit) {
+    return normalized;
+  }
+
+  return words.slice(-livePreviewWordLimit).join(" ");
 }
 
 function findSplitIndex(text) {
@@ -58,19 +75,15 @@ function commitChunk(chunkText) {
 }
 
 function renderDisplay() {
-  const fragments = [...committedChunks];
-  const normalizedLive = normalizeText(liveChunk);
-  if (normalizedLive) {
-    fragments.push(normalizedLive);
-  }
-
-  if (fragments.length === 0) {
-    displayText.textContent = placeholderText;
+  if (committedChunks.length === 0) {
+    finalText.textContent = placeholderText;
   } else {
-    displayText.textContent = fragments.join("\n\n");
+    finalText.textContent = committedChunks.join("\n\n");
   }
 
-  displayText.scrollTop = displayText.scrollHeight;
+  const previewText = getLivePreviewText(liveChunk);
+  liveText.textContent = previewText || livePlaceholderText;
+  finalText.scrollTop = finalText.scrollHeight;
 }
 
 function scheduleRender() {

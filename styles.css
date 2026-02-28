@@ -121,15 +121,40 @@ body {
 
 .display-box {
   height: 100%;
-  overflow-y: auto;
   padding: 14px 16px 28px;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.final-text,
+.live-text {
   white-space: pre-wrap;
   word-break: break-word;
-  color: var(--muted);
-  font-size: clamp(1.15rem, 4vw, 1.55rem);
+  overflow-wrap: anywhere;
+}
+
+.final-text {
+  min-height: 0;
+  overflow-y: auto;
+  color: var(--ink);
+  font-size: clamp(1.1rem, 3.8vw, 1.45rem);
   line-height: 1.7;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
+}
+
+.live-text {
+  min-height: 2.8em;
+  max-height: 5.6em;
+  overflow: hidden;
+  border-top: 1px solid rgba(66, 46, 29, 0.08);
+  padding-top: 10px;
+  color: var(--muted);
+  font-size: clamp(0.96rem, 3.1vw, 1.08rem);
+  line-height: 1.45;
+  opacity: 0.88;
 }
 
 .clear-button {
@@ -184,6 +209,13 @@ body {
 
   .display-box {
     padding: 12px 14px 24px;
-    font-size: 1.08rem;
+  }
+
+  .final-text {
+    font-size: 1.02rem;
+  }
+
+  .live-text {
+    font-size: 0.94rem;
   }
 }
