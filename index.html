@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="description" content="iPhoneの音声入力とブラウザ翻訳の挙動を確認するためのプロトタイプ">
+  <title>Live Transcript Prototype</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="hero">
+      <p class="eyebrow">Prototype</p>
+      <h1>Voice Input Mirror</h1>
+      <p class="lead">
+        上の入力欄に入ったテキストを、下の表示領域へリアルタイムで反映します。
+        下側は通常テキストなので、ブラウザ翻訳の対象になるかを確認しやすくしています。
+      </p>
+    </header>
+
+    <section class="panel">
+      <div class="section-head">
+        <h2>1. 入力欄</h2>
+        <span class="chip">iPhoneの音声入力を使う場所</span>
+      </div>
+      <label class="sr-only" for="sourceText">入力テキスト</label>
+      <textarea
+        id="sourceText"
+        class="input-box"
+        lang="ja"
+        placeholder="ここをタップして、iPhoneのキーボードのマイクから音声入力"
+        autocomplete="off"
+        autocapitalize="off"
+        autocorrect="off"
+        spellcheck="false"
+        rows="6"
+      ></textarea>
+      <div class="action-row">
+        <button id="sampleButton" type="button" class="ghost-button">サンプル文を入れる</button>
+        <button id="clearButton" type="button" class="ghost-button">クリア</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="section-head">
+        <h2>2. 表示欄</h2>
+        <span class="chip">翻訳対象として期待する場所</span>
+      </div>
+      <div id="displayText" class="display-box" lang="ja" translate="yes">
+        ここにリアルタイム表示されます。
+      </div>
+    </section>
+
+    <section class="notes">
+      <h2>確認ポイント</h2>
+      <ol>
+        <li>入力中に下の表示が遅れず更新されるか</li>
+        <li>ブラウザ翻訳を実行したとき、下の表示欄が翻訳されるか</li>
+        <li>翻訳後も追加入力に追従して翻訳表示されるか</li>
+      </ol>
+    </section>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>
