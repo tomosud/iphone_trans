@@ -17,6 +17,7 @@ const params = new URLSearchParams(window.location.search);
 const selectedId = params.get("id");
 
 let activeRecord = null;
+let cachedListData = { latest: null, history: [] };
 const previewLimit = 400;
 
 function formatDate(value) {
@@ -96,16 +97,38 @@ async function copyBody() {
   }
 
   try {
-    await navigator.clipboard.writeText(activeRecord.body);
+    await writeToClipboard(activeRecord.body);
     detailStatus.textContent = "Copied.";
   } catch (error) {
     detailStatus.textContent = "Clipboard write failed.";
   }
 }
 
+async function writeToClipboard(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.top = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+
+  const copied = document.execCommand("copy");
+  document.body.removeChild(textarea);
+
+  if (!copied) {
+    throw new Error("execCommand copy failed");
+  }
+}
+
 async function copyAllTexts() {
-  const { latest, history } = await storageApi.listSavedTexts();
-  const payload = buildBulkCopyText(latest, history);
+  const payload = buildBulkCopyText(cachedListData.latest, cachedListData.history);
 
   if (!payload) {
     listStatus.textContent = "No saved texts.";
@@ -113,7 +136,7 @@ async function copyAllTexts() {
   }
 
   try {
-    await navigator.clipboard.writeText(payload);
+    await writeToClipboard(payload);
     listStatus.textContent = "All texts copied.";
   } catch (error) {
     listStatus.textContent = "Clipboard write failed.";
@@ -141,6 +164,10 @@ async function deleteRecord() {
 
 async function renderList() {
   const { latest, history } = await storageApi.listSavedTexts();
+  cachedListData = {
+    latest,
+    history,
+  };
 
   latestCardContainer.replaceChildren();
   historyList.replaceChildren();
