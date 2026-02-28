@@ -16,6 +16,7 @@ const params = new URLSearchParams(window.location.search);
 const selectedId = params.get("id");
 
 let activeRecord = null;
+const previewLimit = 400;
 
 function formatDate(value) {
   const date = new Date(value);
@@ -55,7 +56,9 @@ function createCard(record, href, badgeText) {
 
   const preview = document.createElement("p");
   preview.className = "saved-card-preview";
-  preview.textContent = record.body;
+  preview.textContent = record.body.length > previewLimit
+    ? `${record.body.slice(0, previewLimit)}...`
+    : record.body;
 
   link.appendChild(meta);
   link.appendChild(title);

@@ -5,7 +5,7 @@ const storageApi = window.TransStorage;
 
 const placeholderText = "Committed text appears here. Turn on browser translation if needed.";
 const idleCommitMs = 900;
-const punctuationCommitMs = 280;
+const punctuationCommitMs = 900;
 const maxVisibleChunks = 2;
 const preferredChunkLength = 120;
 const maxChunkLength = 170;
