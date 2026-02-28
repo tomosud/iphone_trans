@@ -78,12 +78,12 @@ function renderDisplay() {
   if (committedChunks.length === 0) {
     finalText.textContent = placeholderText;
   } else {
-    finalText.textContent = committedChunks.join("\n\n");
+    finalText.textContent = [...committedChunks].reverse().join("\n\n");
   }
 
   const previewText = getLivePreviewText(liveChunk);
   liveText.textContent = previewText || livePlaceholderText;
-  finalText.scrollTop = finalText.scrollHeight;
+  finalText.scrollTop = 0;
 }
 
 function scheduleRender() {
@@ -149,7 +149,22 @@ function clearAll(event) {
   syncFromInput("");
 }
 
+function updateViewportMetrics() {
+  const viewportHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+  const nextAppHeight = Math.max(320, Math.round(viewportHeight));
+  const nextDisplayHeight = Math.max(140, Math.min(260, Math.round(viewportHeight * 0.34)));
+
+  document.documentElement.style.setProperty("--app-height", `${nextAppHeight}px`);
+  document.documentElement.style.setProperty("--display-height", `${nextDisplayHeight}px`);
+}
+
 clearButton.addEventListener("pointerdown", clearAll);
 clearButton.addEventListener("click", clearAll);
 
+window.addEventListener("resize", updateViewportMetrics);
+if (window.visualViewport) {
+  window.visualViewport.addEventListener("resize", updateViewportMetrics);
+}
+
+updateViewportMetrics();
 renderDisplay();
