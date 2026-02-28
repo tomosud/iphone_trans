@@ -3,7 +3,7 @@ const finalText = document.getElementById("finalText");
 const clearButton = document.getElementById("clearButton");
 const storageApi = window.TransStorage;
 
-const placeholderText = "ここに確定したテキストが表示されます。";
+const placeholderText = "Committed text appears here. Turn on browser translation if needed.";
 const idleCommitMs = 900;
 const punctuationCommitMs = 280;
 const maxVisibleChunks = 2;
@@ -204,7 +204,7 @@ function clearAll(event) {
 function updateViewportMetrics() {
   const viewportHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
   const nextAppHeight = Math.max(320, Math.round(viewportHeight));
-  const nextDisplayHeight = Math.max(200, Math.min(420, Math.round(viewportHeight * 0.58)));
+  const nextDisplayHeight = Math.max(260, Math.min(520, Math.round(viewportHeight * 0.72)));
 
   document.documentElement.style.setProperty("--app-height", `${nextAppHeight}px`);
   document.documentElement.style.setProperty("--display-height", `${nextDisplayHeight}px`);

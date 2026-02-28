@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="ja">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <meta name="description" content="iPhoneの音声入力とブラウザ翻訳の挙動を確認するためのプロトタイプ">
+  <meta name="description" content="Prototype for testing iPhone dictation with browser translation.">
   <title>Live Transcript Prototype</title>
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -11,30 +11,30 @@
   <main class="app-shell">
     <section class="input-panel">
       <div class="input-row">
-        <label class="sr-only" for="sourceText">入力テキスト</label>
+        <label class="sr-only" for="sourceText">Input text</label>
         <input
           id="sourceText"
           class="input-box"
           type="text"
-          lang="ja"
-          placeholder="ここをタップして音声入力"
+          lang="en"
+          placeholder="Tap here and start dictation"
           autocomplete="off"
           autocapitalize="off"
           autocorrect="off"
           spellcheck="false"
         >
-        <button id="clearButton" class="clear-button" type="button" aria-label="入力内容を消去">Clear</button>
+        <button id="clearButton" class="clear-button" type="button" aria-label="Clear input">Clear</button>
       </div>
     </section>
 
     <section class="display-panel">
       <div class="display-box">
-        <div id="finalText" class="final-text" lang="ja" translate="yes"></div>
+        <div id="finalText" class="final-text" lang="en" translate="yes"></div>
       </div>
     </section>
 
     <section class="nav-panel" translate="no">
-      <a class="nav-link-button" href="saved.html">保存したテキストを開く</a>
+      <a class="nav-link-button" href="saved.html">Open saved texts</a>
     </section>
   </main>
 

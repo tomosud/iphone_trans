@@ -4,7 +4,8 @@
   const HISTORY_STORE = "history";
   const STATE_STORE = "state";
   const LATEST_KEY = "latest";
-  const MAX_HISTORY_ITEMS = 99;
+  const MAX_TOTAL_ITEMS = 300;
+  const MAX_HISTORY_ITEMS = MAX_TOTAL_ITEMS - 1;
 
   function openDatabase() {
     return new Promise((resolve, reject) => {

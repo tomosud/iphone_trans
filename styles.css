@@ -29,13 +29,13 @@ body {
 }
 
 body {
-  overflow: hidden;
+  overflow: auto;
 }
 
 .app-shell {
   width: min(720px, 100%);
   min-height: var(--app-height);
-  height: var(--app-height);
+  height: auto;
   margin: 0 auto;
   display: grid;
   grid-template-rows: auto auto auto;
@@ -72,13 +72,14 @@ body {
 
 .display-panel {
   height: var(--display-height);
-  min-height: 220px;
-  max-height: 420px;
+  min-height: 260px;
+  max-height: 520px;
   padding: 12px;
 }
 
 .nav-panel {
   padding: 10px;
+  margin-top: 40px;
 }
 
 .input-box,
@@ -348,8 +349,8 @@ body {
   }
 
   .display-panel {
-    min-height: 200px;
-    max-height: 360px;
+    min-height: 250px;
+    max-height: 460px;
     padding: 8px;
   }
 
@@ -357,6 +358,10 @@ body {
   .saved-header,
   .saved-panel {
     padding: 12px;
+  }
+
+  .nav-panel {
+    margin-top: 56px;
   }
 
   .input-box {
