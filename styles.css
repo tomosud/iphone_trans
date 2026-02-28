@@ -38,7 +38,7 @@ body {
   height: var(--app-height);
   margin: 0 auto;
   display: grid;
-  grid-template-rows: auto auto;
+  grid-template-rows: auto auto auto;
   align-content: start;
   gap: var(--gap);
   padding:
@@ -48,7 +48,8 @@ body {
 }
 
 .input-panel,
-.display-panel {
+.display-panel,
+.metrics-panel {
   background: var(--panel);
   border: 1px solid var(--panel-border);
   border-radius: var(--radius);
@@ -72,6 +73,57 @@ body {
   min-height: 220px;
   max-height: 420px;
   padding: 12px;
+}
+
+.metrics-panel {
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.metric {
+  display: grid;
+  gap: 6px;
+}
+
+.metric-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.metric-label,
+.metric-value {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1;
+}
+
+.metric-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.meter-track {
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(66, 46, 29, 0.08);
+}
+
+.meter-fill {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  transition: width 180ms ease;
+}
+
+.meter-fill-stored {
+  background: linear-gradient(90deg, rgba(203, 109, 52, 0.72), rgba(203, 109, 52, 1));
+}
+
+.meter-fill-live {
+  background: linear-gradient(90deg, rgba(90, 116, 94, 0.72), rgba(90, 116, 94, 1));
 }
 
 .input-box,
@@ -181,6 +233,10 @@ body {
     min-height: 200px;
     max-height: 360px;
     padding: 8px;
+  }
+
+  .metrics-panel {
+    padding: 8px 10px;
   }
 
   .input-box {

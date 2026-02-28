@@ -32,6 +32,27 @@
         <div id="finalText" class="final-text" lang="ja" translate="yes"></div>
       </div>
     </section>
+
+    <section class="metrics-panel" translate="no" aria-label="テキスト量メーター">
+      <div class="metric">
+        <div class="metric-head">
+          <span class="metric-label">Stored</span>
+          <span id="storedCount" class="metric-value">0 chars</span>
+        </div>
+        <div class="meter-track">
+          <div id="storedBar" class="meter-fill meter-fill-stored"></div>
+        </div>
+      </div>
+      <div class="metric">
+        <div class="metric-head">
+          <span class="metric-label">Current</span>
+          <span id="liveCount" class="metric-value">0 chars</span>
+        </div>
+        <div class="meter-track">
+          <div id="liveBar" class="meter-fill meter-fill-live"></div>
+        </div>
+      </div>
+    </section>
   </main>
 
   <script src="script.js"></script>

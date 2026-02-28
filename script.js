@@ -1,6 +1,10 @@
 const sourceText = document.getElementById("sourceText");
 const finalText = document.getElementById("finalText");
 const clearButton = document.getElementById("clearButton");
+const storedCount = document.getElementById("storedCount");
+const liveCount = document.getElementById("liveCount");
+const storedBar = document.getElementById("storedBar");
+const liveBar = document.getElementById("liveBar");
 
 const placeholderText = "ここに確定したテキストが表示されます。";
 const idleCommitMs = 900;
@@ -8,6 +12,8 @@ const punctuationCommitMs = 280;
 const maxVisibleChunks = 2;
 const preferredChunkLength = 120;
 const maxChunkLength = 170;
+const storedMeterMax = 700;
+const liveMeterMax = 180;
 
 let committedText = "";
 let committedChunks = [];
@@ -81,6 +87,19 @@ function renderDisplay() {
   }
 
   finalText.scrollTop = 0;
+  renderMetrics();
+}
+
+function renderMetrics() {
+  const storedChars = committedText.length;
+  const liveChars = normalizeText(liveChunk).length;
+  const storedRatio = Math.min(1, storedChars / storedMeterMax);
+  const liveRatio = Math.min(1, liveChars / liveMeterMax);
+
+  storedCount.textContent = `${storedChars} chars`;
+  liveCount.textContent = `${liveChars} chars`;
+  storedBar.style.width = `${storedRatio * 100}%`;
+  liveBar.style.width = `${liveRatio * 100}%`;
 }
 
 function scheduleIdleCommit() {
