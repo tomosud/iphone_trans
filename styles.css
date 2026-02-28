@@ -123,10 +123,8 @@ body {
   height: 100%;
   overflow-y: auto;
   padding: 14px 16px 28px;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-end;
-  gap: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
   color: var(--muted);
   font-size: clamp(1.15rem, 4vw, 1.55rem);
   line-height: 1.7;
@@ -134,23 +132,8 @@ body {
   -webkit-overflow-scrolling: touch;
 }
 
-.chunk {
-  display: block;
-  padding: 8px 10px;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.56);
-  word-break: break-word;
-}
-
-.chunk-live {
-  border: 1px solid rgba(203, 109, 52, 0.22);
-  background: rgba(255, 243, 234, 0.92);
-  color: var(--ink);
-}
-
-.chunk-placeholder {
-  background: transparent;
-  border: 1px dashed rgba(118, 102, 87, 0.22);
+.clear-button {
+  touch-action: manipulation;
 }
 
 .sr-only {

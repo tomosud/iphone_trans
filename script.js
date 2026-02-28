@@ -58,32 +58,16 @@ function commitChunk(chunkText) {
 }
 
 function renderDisplay() {
-  displayText.innerHTML = "";
-
-  const fragments = committedChunks.map((chunk) => {
-    const node = document.createElement("p");
-    node.className = "chunk";
-    node.textContent = chunk;
-    return node;
-  });
-
+  const fragments = [...committedChunks];
   const normalizedLive = normalizeText(liveChunk);
   if (normalizedLive) {
-    const liveNode = document.createElement("p");
-    liveNode.className = "chunk chunk-live";
-    liveNode.textContent = normalizedLive;
-    fragments.push(liveNode);
+    fragments.push(normalizedLive);
   }
 
   if (fragments.length === 0) {
-    const placeholderNode = document.createElement("p");
-    placeholderNode.className = "chunk chunk-placeholder";
-    placeholderNode.textContent = placeholderText;
-    fragments.push(placeholderNode);
-  }
-
-  for (const node of fragments) {
-    displayText.appendChild(node);
+    displayText.textContent = placeholderText;
+  } else {
+    displayText.textContent = fragments.join("\n\n");
   }
 
   displayText.scrollTop = displayText.scrollHeight;
@@ -145,9 +129,14 @@ sourceText.addEventListener("input", () => {
   syncFromInput(sourceText.value);
 });
 
-clearButton.addEventListener("click", () => {
+function clearAll(event) {
+  event.preventDefault();
   sourceText.value = "";
+  sourceText.blur();
   syncFromInput("");
-});
+}
+
+clearButton.addEventListener("pointerdown", clearAll);
+clearButton.addEventListener("click", clearAll);
 
 renderDisplay();
