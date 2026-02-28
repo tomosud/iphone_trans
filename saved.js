@@ -8,8 +8,7 @@ const detailTitle = document.getElementById("detailTitle");
 const detailDate = document.getElementById("detailDate");
 const detailBody = document.getElementById("detailBody");
 const detailStatus = document.getElementById("detailStatus");
-const copyButton = document.getElementById("copyButton");
-const deleteButton = document.getElementById("deleteButton");
+const detailActionButtons = document.querySelectorAll("[data-action]");
 
 const storageApi = window.TransStorage;
 const params = new URLSearchParams(window.location.search);
@@ -127,8 +126,9 @@ async function renderDetail(id) {
     detailTitle.textContent = "Not found";
     detailDate.textContent = "";
     detailBody.textContent = "指定した保存テキストは見つかりませんでした。";
-    copyButton.disabled = true;
-    deleteButton.disabled = true;
+    for (const button of detailActionButtons) {
+      button.disabled = true;
+    }
     return;
   }
 
@@ -147,8 +147,18 @@ async function initSavedPage() {
     listView.hidden = true;
     detailView.hidden = false;
     await renderDetail(selectedId);
-    copyButton.addEventListener("click", copyBody);
-    deleteButton.addEventListener("click", deleteRecord);
+    for (const button of detailActionButtons) {
+      button.addEventListener("click", () => {
+        if (button.dataset.action === "copy") {
+          void copyBody();
+          return;
+        }
+
+        if (button.dataset.action === "delete") {
+          void deleteRecord();
+        }
+      });
+    }
     return;
   }
 

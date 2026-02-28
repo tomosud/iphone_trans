@@ -124,11 +124,16 @@
 
     const record = createLatestRecord(normalizedBody);
 
-    await withTransaction([STATE_STORE], "readwrite", async (transaction) => {
-      transaction.objectStore(STATE_STORE).put(record);
-    });
+    return withTransaction([STATE_STORE], "readwrite", async (transaction) => {
+      const stateStore = transaction.objectStore(STATE_STORE);
+      const existing = await requestToPromise(stateStore.get(LATEST_KEY));
+      if (existing && existing.body === normalizedBody) {
+        return existing;
+      }
 
-    return record;
+      stateStore.put(record);
+      return record;
+    });
   }
 
   async function getLatestText() {
@@ -147,12 +152,19 @@
 
     const record = createHistoryRecord(normalizedBody, reason);
 
-    await withTransaction([HISTORY_STORE], "readwrite", async (transaction) => {
-      transaction.objectStore(HISTORY_STORE).put(record);
-      await pruneHistory(transaction);
-    });
+    return withTransaction([HISTORY_STORE], "readwrite", async (transaction) => {
+      const historyStore = transaction.objectStore(HISTORY_STORE);
+      const existingRecords = await requestToPromise(historyStore.getAll());
+      const matchedRecord = existingRecords.find((item) => item.body === normalizedBody);
 
-    return record;
+      if (matchedRecord) {
+        return matchedRecord;
+      }
+
+      historyStore.put(record);
+      await pruneHistory(transaction);
+      return record;
+    });
   }
 
   async function listSavedTexts() {

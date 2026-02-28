@@ -41,10 +41,14 @@
         <h2 id="detailTitle" class="detail-title"></h2>
         <p id="detailDate" class="detail-date"></p>
       </div>
+      <div class="detail-actions">
+        <button class="detail-button" type="button" data-action="copy">Copy</button>
+        <button class="detail-button detail-button-danger" type="button" data-action="delete">Delete</button>
+      </div>
       <article id="detailBody" class="detail-body"></article>
       <div class="detail-actions">
-        <button id="copyButton" class="detail-button" type="button">Copy</button>
-        <button id="deleteButton" class="detail-button detail-button-danger" type="button">Delete</button>
+        <button class="detail-button" type="button" data-action="copy">Copy</button>
+        <button class="detail-button detail-button-danger" type="button" data-action="delete">Delete</button>
       </div>
       <p id="detailStatus" class="detail-status" aria-live="polite"></p>
     </section>
