@@ -4,6 +4,8 @@ const latestSection = document.getElementById("latestSection");
 const latestCardContainer = document.getElementById("latestCardContainer");
 const historyList = document.getElementById("historyList");
 const emptyState = document.getElementById("emptyState");
+const copyAllButton = document.getElementById("copyAllButton");
+const listStatus = document.getElementById("listStatus");
 const detailTitle = document.getElementById("detailTitle");
 const detailDate = document.getElementById("detailDate");
 const detailBody = document.getElementById("detailBody");
@@ -66,6 +68,28 @@ function createCard(record, href, badgeText) {
   return link;
 }
 
+function buildBulkCopyText(latest, history) {
+  const items = [];
+
+  if (latest) {
+    items.push({
+      date: latest.updatedAt || latest.createdAt,
+      body: latest.body,
+    });
+  }
+
+  for (const record of history) {
+    items.push({
+      date: record.updatedAt || record.createdAt,
+      body: record.body,
+    });
+  }
+
+  return items
+    .map((item) => `${formatDate(item.date)}\n${item.body}`)
+    .join("\n\n");
+}
+
 async function copyBody() {
   if (!activeRecord) {
     return;
@@ -76,6 +100,23 @@ async function copyBody() {
     detailStatus.textContent = "Copied.";
   } catch (error) {
     detailStatus.textContent = "Clipboard write failed.";
+  }
+}
+
+async function copyAllTexts() {
+  const { latest, history } = await storageApi.listSavedTexts();
+  const payload = buildBulkCopyText(latest, history);
+
+  if (!payload) {
+    listStatus.textContent = "No saved texts.";
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(payload);
+    listStatus.textContent = "All texts copied.";
+  } catch (error) {
+    listStatus.textContent = "Clipboard write failed.";
   }
 }
 
@@ -164,6 +205,9 @@ async function initSavedPage() {
 
   listView.hidden = false;
   detailView.hidden = true;
+  copyAllButton.addEventListener("click", () => {
+    void copyAllTexts();
+  });
   await renderList();
 }
 

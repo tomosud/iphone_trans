@@ -227,6 +227,12 @@ body {
   margin-top: 16px;
 }
 
+.saved-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 10px;
+}
+
 .saved-group-head {
   margin-bottom: 10px;
 }
