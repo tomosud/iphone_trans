@@ -1,39 +1,20 @@
 const sourceText = document.getElementById("sourceText");
 const finalText = document.getElementById("finalText");
-const liveText = document.getElementById("liveText");
 const clearButton = document.getElementById("clearButton");
 
 const placeholderText = "ここに確定したテキストが表示されます。";
-const livePlaceholderText = "入力中のテキスト";
-const renderDelayMs = 900;
-const idleCommitMs = 1800;
+const idleCommitMs = 2600;
 const maxVisibleChunks = 2;
 const preferredChunkLength = 120;
 const maxChunkLength = 170;
-const livePreviewWordLimit = 10;
 
 let committedText = "";
 let committedChunks = [];
 let liveChunk = "";
-let renderTimer = null;
 let idleCommitTimer = null;
 
 function normalizeText(value) {
   return value.replace(/\s+/g, " ").trim();
-}
-
-function getLivePreviewText(value) {
-  const normalized = normalizeText(value);
-  if (!normalized) {
-    return "";
-  }
-
-  const words = normalized.split(" ");
-  if (words.length <= livePreviewWordLimit) {
-    return normalized;
-  }
-
-  return words.slice(-livePreviewWordLimit).join(" ");
 }
 
 function findSplitIndex(text) {
@@ -81,16 +62,7 @@ function renderDisplay() {
     finalText.textContent = [...committedChunks].reverse().join("\n\n");
   }
 
-  const previewText = getLivePreviewText(liveChunk);
-  liveText.textContent = previewText || livePlaceholderText;
   finalText.scrollTop = 0;
-}
-
-function scheduleRender() {
-  clearTimeout(renderTimer);
-  renderTimer = window.setTimeout(() => {
-    renderDisplay();
-  }, renderDelayMs);
 }
 
 function scheduleIdleCommit() {
@@ -111,7 +83,6 @@ function syncFromInput(value) {
     committedText = "";
     committedChunks = [];
     liveChunk = "";
-    clearTimeout(renderTimer);
     clearTimeout(idleCommitTimer);
     renderDisplay();
     return;
@@ -134,7 +105,6 @@ function syncFromInput(value) {
     splitIndex = findSplitIndex(liveChunk);
   }
 
-  scheduleRender();
   scheduleIdleCommit();
 }
 
@@ -152,7 +122,7 @@ function clearAll(event) {
 function updateViewportMetrics() {
   const viewportHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
   const nextAppHeight = Math.max(320, Math.round(viewportHeight));
-  const nextDisplayHeight = Math.max(140, Math.min(260, Math.round(viewportHeight * 0.34)));
+  const nextDisplayHeight = Math.max(200, Math.min(420, Math.round(viewportHeight * 0.58)));
 
   document.documentElement.style.setProperty("--app-height", `${nextAppHeight}px`);
   document.documentElement.style.setProperty("--display-height", `${nextDisplayHeight}px`);

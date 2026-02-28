@@ -19,6 +19,24 @@
 5. `Actions` タブで `Deploy static site to GitHub Pages` が成功することを確認する
 6. 発行された Pages URL を iPhone で開く
 
+## iPhone で新しい版を強制的に開く方法
+
+GitHub Pages は反映まで少し時間がかかることがあり、さらに iPhone 側で HTML がキャッシュされることがあります。
+
+1. まず `Actions` で deploy 完了を確認する
+2. その後 1 から 10 分ほど待つ
+3. URL の末尾に `?v=202602281650` のようなクエリを付けて開く
+4. それでも古い場合はプライベートブラウズで開く
+5. まだ古い場合は Safari のサイトデータを消す
+
+例:
+
+```text
+https://tomosud.github.io/iphone_trans/?v=202602281650
+```
+
+このリポジトリの build は CSS と JS に自動で build version を付けるので、HTML さえ新しいものが開けばアセットは差し替わりやすくなります。
+
 ## Workflow の動き
 
 1. `actions/checkout` でコードを取得する

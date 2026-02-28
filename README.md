@@ -35,6 +35,8 @@ npm run preview
 
 詳細手順は [BUILD_AND_DEPLOY.md](./BUILD_AND_DEPLOY.md) にまとめています。
 
+`build` では `dist/index.html` 内の CSS と JS に build version を自動付与します。iPhone で古い版が残る場合は、ページ URL 自体にも `?v=...` を付けて開いてください。
+
 ## 現在の表示方針
 
 - 入力欄は iPhone でも 1 行に収まる `input[type="text"]`

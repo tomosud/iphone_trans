@@ -10,7 +10,7 @@
   --radius: 20px;
   --gap: 12px;
   --app-height: 100dvh;
-  --display-height: 250px;
+  --display-height: 320px;
 }
 
 * {
@@ -69,8 +69,8 @@ body {
 
 .display-panel {
   height: var(--display-height);
-  min-height: 160px;
-  max-height: 320px;
+  min-height: 220px;
+  max-height: 420px;
   padding: 12px;
 }
 
@@ -127,40 +127,21 @@ body {
 
 .display-box {
   height: 100%;
-  padding: 14px 16px 28px;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: 10px;
-  align-items: start;
-}
-
-.final-text,
-.live-text {
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow-wrap: anywhere;
+  padding: 16px 16px 20px;
+  display: block;
 }
 
 .final-text {
-  min-height: 0;
+  height: 100%;
   overflow-y: auto;
   color: var(--ink);
   font-size: clamp(1.1rem, 3.8vw, 1.45rem);
-  line-height: 1.7;
+  line-height: 1.8;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
-}
-
-.live-text {
-  min-height: 2.2em;
-  max-height: 4.8em;
-  overflow: hidden;
-  border-bottom: 1px solid rgba(66, 46, 29, 0.08);
-  padding-bottom: 10px;
-  color: var(--muted);
-  font-size: clamp(0.96rem, 3.1vw, 1.08rem);
-  line-height: 1.45;
-  opacity: 0.88;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .clear-button {
@@ -197,8 +178,8 @@ body {
   }
 
   .display-panel {
-    min-height: 140px;
-    max-height: 240px;
+    min-height: 200px;
+    max-height: 360px;
     padding: 8px;
   }
 
@@ -216,14 +197,11 @@ body {
   }
 
   .display-box {
-    padding: 12px 14px 24px;
+    padding: 14px 14px 18px;
   }
 
   .final-text {
     font-size: 1.02rem;
   }
 
-  .live-text {
-    font-size: 0.94rem;
-  }
 }
