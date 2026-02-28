@@ -1,0 +1,13 @@
+{
+  "name": "iphone-trans",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Prototype for testing iPhone voice input with browser translation on GitHub Pages.",
+  "scripts": {
+    "build": "node build.mjs",
+    "preview": "python -m http.server 4173 --directory dist"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
