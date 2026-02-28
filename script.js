@@ -1,6 +1,7 @@
 const sourceText = document.getElementById("sourceText");
 const finalText = document.getElementById("finalText");
 const clearButton = document.getElementById("clearButton");
+const savedTextsLink = document.getElementById("savedTextsLink");
 const storageApi = window.TransStorage;
 
 const placeholderText = "Save text by voice input.\nYou can also use Google Translate for live translation.";
@@ -99,20 +100,6 @@ function scheduleLatestSave(value) {
   }, latestSaveDelayMs);
 }
 
-async function restoreLatestText() {
-  try {
-    const latest = await storageApi.getLatestText();
-    if (!latest || !latest.body) {
-      return;
-    }
-
-    sourceText.value = latest.body;
-    syncFromInput(latest.body);
-  } catch (error) {
-    console.error("Failed to restore latest text.", error);
-  }
-}
-
 function scheduleIdleCommit() {
   clearTimeout(idleCommitTimer);
   idleCommitTimer = window.setTimeout(() => {
@@ -176,12 +163,14 @@ sourceText.addEventListener("input", () => {
 function persistCurrentTextAsHistory(body) {
   const normalizedBody = normalizeText(body);
   if (!normalizedBody) {
-    return;
+    return Promise.resolve();
   }
 
   clearTimeout(latestSaveTimer);
-  void storageApi.saveLatestText(normalizedBody);
-  void storageApi.archiveText(normalizedBody, "clear");
+  return Promise.all([
+    storageApi.saveLatestText(normalizedBody),
+    storageApi.archiveText(normalizedBody, "clear"),
+  ]);
 }
 
 function clearAll(event) {
@@ -201,6 +190,12 @@ function clearAll(event) {
   syncFromInput("");
 }
 
+async function openSavedTexts(event) {
+  event.preventDefault();
+  await persistCurrentTextAsHistory(sourceText.value);
+  window.location.href = savedTextsLink.href;
+}
+
 function updateViewportMetrics() {
   const viewportHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
   const nextAppHeight = Math.max(320, Math.round(viewportHeight));
@@ -212,6 +207,9 @@ function updateViewportMetrics() {
 
 clearButton.addEventListener("pointerdown", clearAll);
 clearButton.addEventListener("click", clearAll);
+savedTextsLink.addEventListener("click", (event) => {
+  void openSavedTexts(event);
+});
 
 window.addEventListener("resize", updateViewportMetrics);
 if (window.visualViewport) {
@@ -220,4 +218,3 @@ if (window.visualViewport) {
 
 updateViewportMetrics();
 renderDisplay();
-void restoreLatestText();
