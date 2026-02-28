@@ -2,6 +2,8 @@
 
 GitHub Pages で公開して、次の成立性を確認するための最小プロトタイプです。
 
+https://tomosud.github.io/iphone_trans/
+
 - 上の入力欄に入れた文字が、下の表示欄へリアルタイム反映されるか
 - iPhone の音声入力で `textarea` に入力できるか
 - ブラウザ翻訳をかけたとき、下の表示欄が翻訳対象になるか
