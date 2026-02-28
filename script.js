@@ -1,6 +1,7 @@
 const sourceText = document.getElementById("sourceText");
 const finalText = document.getElementById("finalText");
 const clearButton = document.getElementById("clearButton");
+const storageApi = window.TransStorage;
 
 const placeholderText = "ここに確定したテキストが表示されます。";
 const idleCommitMs = 900;
@@ -8,12 +9,15 @@ const punctuationCommitMs = 280;
 const maxVisibleChunks = 2;
 const preferredChunkLength = 120;
 const maxChunkLength = 170;
+const latestSaveDelayMs = 250;
 
 let committedText = "";
 let committedChunks = [];
 let liveChunk = "";
 let idleCommitTimer = null;
 let punctuationCommitTimer = null;
+let latestSaveTimer = null;
+let ignoreNextClearClick = false;
 
 function normalizeText(value) {
   return value.replace(/\s+/g, " ").trim();
@@ -83,6 +87,32 @@ function renderDisplay() {
   finalText.scrollTop = 0;
 }
 
+function scheduleLatestSave(value) {
+  clearTimeout(latestSaveTimer);
+  const normalizedValue = normalizeText(value);
+  if (!normalizedValue) {
+    return;
+  }
+
+  latestSaveTimer = window.setTimeout(() => {
+    void storageApi.saveLatestText(normalizedValue);
+  }, latestSaveDelayMs);
+}
+
+async function restoreLatestText() {
+  try {
+    const latest = await storageApi.getLatestText();
+    if (!latest || !latest.body) {
+      return;
+    }
+
+    sourceText.value = latest.body;
+    syncFromInput(latest.body);
+  } catch (error) {
+    console.error("Failed to restore latest text.", error);
+  }
+}
+
 function scheduleIdleCommit() {
   clearTimeout(idleCommitTimer);
   idleCommitTimer = window.setTimeout(() => {
@@ -112,6 +142,7 @@ function syncFromInput(value) {
     liveChunk = "";
     clearTimeout(idleCommitTimer);
     clearTimeout(punctuationCommitTimer);
+    clearTimeout(latestSaveTimer);
     renderDisplay();
     return;
   }
@@ -135,14 +166,36 @@ function syncFromInput(value) {
 
   scheduleIdleCommit();
   schedulePunctuationCommit();
+  scheduleLatestSave(normalizedValue);
 }
 
 sourceText.addEventListener("input", () => {
   syncFromInput(sourceText.value);
 });
 
+function persistCurrentTextAsHistory(body) {
+  const normalizedBody = normalizeText(body);
+  if (!normalizedBody) {
+    return;
+  }
+
+  clearTimeout(latestSaveTimer);
+  void storageApi.saveLatestText(normalizedBody);
+  void storageApi.archiveText(normalizedBody, "clear");
+}
+
 function clearAll(event) {
   event.preventDefault();
+  if (event.type === "click" && ignoreNextClearClick) {
+    ignoreNextClearClick = false;
+    return;
+  }
+
+  if (event.type === "pointerdown") {
+    ignoreNextClearClick = true;
+  }
+
+  persistCurrentTextAsHistory(sourceText.value);
   sourceText.value = "";
   sourceText.blur();
   syncFromInput("");
@@ -167,3 +220,4 @@ if (window.visualViewport) {
 
 updateViewportMetrics();
 renderDisplay();
+void restoreLatestText();
