@@ -3,7 +3,8 @@ const finalText = document.getElementById("finalText");
 const clearButton = document.getElementById("clearButton");
 
 const placeholderText = "ここに確定したテキストが表示されます。";
-const idleCommitMs = 2600;
+const idleCommitMs = 900;
+const punctuationCommitMs = 280;
 const maxVisibleChunks = 2;
 const preferredChunkLength = 120;
 const maxChunkLength = 170;
@@ -12,6 +13,7 @@ let committedText = "";
 let committedChunks = [];
 let liveChunk = "";
 let idleCommitTimer = null;
+let punctuationCommitTimer = null;
 
 function normalizeText(value) {
   return value.replace(/\s+/g, " ").trim();
@@ -55,6 +57,22 @@ function commitChunk(chunkText) {
   }
 }
 
+function commitLiveChunk() {
+  if (!normalizeText(liveChunk)) {
+    return;
+  }
+
+  clearTimeout(idleCommitTimer);
+  clearTimeout(punctuationCommitTimer);
+  commitChunk(liveChunk);
+  liveChunk = "";
+  renderDisplay();
+}
+
+function endsWithSentencePunctuation(text) {
+  return /[.!?。！？]$/.test(normalizeText(text));
+}
+
 function renderDisplay() {
   if (committedChunks.length === 0) {
     finalText.textContent = placeholderText;
@@ -68,12 +86,21 @@ function renderDisplay() {
 function scheduleIdleCommit() {
   clearTimeout(idleCommitTimer);
   idleCommitTimer = window.setTimeout(() => {
-    if (normalizeText(liveChunk)) {
-      commitChunk(liveChunk);
-      liveChunk = "";
-      renderDisplay();
-    }
+    commitLiveChunk();
   }, idleCommitMs);
+}
+
+function schedulePunctuationCommit() {
+  clearTimeout(punctuationCommitTimer);
+  if (!endsWithSentencePunctuation(liveChunk)) {
+    return;
+  }
+
+  punctuationCommitTimer = window.setTimeout(() => {
+    if (endsWithSentencePunctuation(liveChunk)) {
+      commitLiveChunk();
+    }
+  }, punctuationCommitMs);
 }
 
 function syncFromInput(value) {
@@ -84,6 +111,7 @@ function syncFromInput(value) {
     committedChunks = [];
     liveChunk = "";
     clearTimeout(idleCommitTimer);
+    clearTimeout(punctuationCommitTimer);
     renderDisplay();
     return;
   }
@@ -106,6 +134,7 @@ function syncFromInput(value) {
   }
 
   scheduleIdleCommit();
+  schedulePunctuationCommit();
 }
 
 sourceText.addEventListener("input", () => {
