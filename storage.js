@@ -116,6 +116,46 @@
     }
   }
 
+  async function getLastSavedSnapshot(transaction) {
+    const stateStore = transaction.objectStore(STATE_STORE);
+    const historyStore = transaction.objectStore(HISTORY_STORE);
+    const latest = await requestToPromise(stateStore.get(LATEST_KEY));
+    const historyRecords = await requestToPromise(historyStore.getAll());
+
+    historyRecords.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    const latestHistory = historyRecords[0] || null;
+
+    if (!latest && !latestHistory) {
+      return null;
+    }
+
+    if (!latestHistory) {
+      return {
+        body: latest.body,
+        timestamp: latest.updatedAt,
+      };
+    }
+
+    if (!latest) {
+      return {
+        body: latestHistory.body,
+        timestamp: latestHistory.createdAt,
+      };
+    }
+
+    if (latest.updatedAt >= latestHistory.createdAt) {
+      return {
+        body: latest.body,
+        timestamp: latest.updatedAt,
+      };
+    }
+
+    return {
+      body: latestHistory.body,
+      timestamp: latestHistory.createdAt,
+    };
+  }
+
   async function saveLatestText(body) {
     const normalizedBody = normalizeText(body);
     if (!normalizedBody) {
@@ -152,7 +192,12 @@
 
     const record = createHistoryRecord(normalizedBody, reason);
 
-    return withTransaction([HISTORY_STORE], "readwrite", async (transaction) => {
+    return withTransaction([STATE_STORE, HISTORY_STORE], "readwrite", async (transaction) => {
+      const lastSaved = await getLastSavedSnapshot(transaction);
+      if (lastSaved && lastSaved.body === normalizedBody) {
+        return null;
+      }
+
       const historyStore = transaction.objectStore(HISTORY_STORE);
       const existingRecords = await requestToPromise(historyStore.getAll());
       const matchedRecord = existingRecords.find((item) => item.body === normalizedBody);
