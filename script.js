@@ -3,7 +3,7 @@ const finalText = document.getElementById("finalText");
 const clearButton = document.getElementById("clearButton");
 const storageApi = window.TransStorage;
 
-const placeholderText = "Committed text appears here. Turn on browser translation if needed.";
+const placeholderText = "Save text by voice input.\nYou can also use Google Translate for live translation.";
 const idleCommitMs = 900;
 const punctuationCommitMs = 900;
 const maxVisibleChunks = 2;
