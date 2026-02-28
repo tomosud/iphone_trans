@@ -227,6 +227,16 @@ body {
   margin-top: 16px;
 }
 
+.saved-notice {
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: rgba(69, 54, 21, 0.42);
+  color: #f1d8a5;
+  line-height: 1.6;
+}
+
 .saved-toolbar {
   display: flex;
   justify-content: flex-end;
