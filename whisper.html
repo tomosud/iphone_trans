@@ -192,7 +192,7 @@
                     </div>
                     <div>
                         <label>無音カットoff <span id="silenceVal">1.5</span>s</label>
-                        <input type="range" id="silenceSlider" min="5" max="40" value="15">
+                        <input type="range" id="silenceSlider" min="2" max="40" value="6">
                     </div>
                 </div>
             </details>
@@ -273,13 +273,33 @@
         let MANUAL_FLOOR      = 0.010; // hard minimum floor (from slider)
         let SILENCE_CHUNKS_NEEDED = 6; // ~1.5 s silence to end segment
 
+        // ── Persist VAD settings ──────────────────────────────────────────────
+        function saveVadSettings() {
+            localStorage.setItem('vad_thresh',  threshSlider.value);
+            localStorage.setItem('vad_silence', silenceSlider.value);
+        }
+        function loadVadSettings() {
+            const t = localStorage.getItem('vad_thresh');
+            const s = localStorage.getItem('vad_silence');
+            if (t) { threshSlider.value  = t; }
+            if (s) { silenceSlider.value = s; }
+            // apply loaded values
+            MANUAL_FLOOR          = threshSlider.value / 1000;
+            SILENCE_CHUNKS_NEEDED = parseInt(silenceSlider.value);
+            threshVal.textContent  = MANUAL_FLOOR.toFixed(3);
+            silenceVal.textContent = (SILENCE_CHUNKS_NEEDED * CHUNK_MS / 1000).toFixed(1);
+        }
+        loadVadSettings();
+
         threshSlider.addEventListener('input', () => {
             MANUAL_FLOOR = threshSlider.value / 1000;
             threshVal.textContent = MANUAL_FLOOR.toFixed(3);
+            saveVadSettings();
         });
         silenceSlider.addEventListener('input', () => {
             SILENCE_CHUNKS_NEEDED = parseInt(silenceSlider.value);
             silenceVal.textContent = (SILENCE_CHUNKS_NEEDED * CHUNK_MS / 1000).toFixed(1);
+            saveVadSettings();
         });
 
         // ── State ─────────────────────────────────────────────────────────────
