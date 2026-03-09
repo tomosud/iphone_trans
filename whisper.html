@@ -194,6 +194,7 @@
                         <label>無音カットoff <span id="silenceVal">1.5</span>s</label>
                         <input type="range" id="silenceSlider" min="2" max="40" value="6">
                     </div>
+                    <div id="vadDebug" style="margin-top:6px;font-size:0.8rem;color:var(--muted);font-family:monospace;letter-spacing:0.02em;"></div>
                 </div>
             </details>
         </div>
@@ -256,6 +257,7 @@
         const threshVal     = document.getElementById('threshVal');
         const silenceSlider = document.getElementById('silenceSlider');
         const silenceVal    = document.getElementById('silenceVal');
+        const vadDebug      = document.getElementById('vadDebug');
 
         // ── VAD parameters ────────────────────────────────────────────────────
         const SAMPLE_RATE       = 16000;
@@ -539,15 +541,22 @@
             const pct = Math.min(100, smoothedRms / 0.08 * 100);
             volFill.style.width = pct + '%';
 
-            // Adaptive noise floor: update slowly while not speaking
-            if (!inSpeech) {
+            const onsetThresh  = Math.max(MANUAL_FLOOR, noiseFloor * ONSET_MULT);
+            const offsetThresh = Math.max(MANUAL_FLOOR * 0.6, noiseFloor * OFFSET_MULT);
+
+            // Adaptive noise floor: only update when signal is clearly background
+            // (level below onset threshold) and not in speech — prevents speech audio
+            // from contaminating the noise estimate and breaking subsequent detection.
+            if (!inSpeech && level < onsetThresh) {
                 noiseFloor = noiseFloor * (1 - NOISE_ALPHA) + level * NOISE_ALPHA;
                 noiseFloor = Math.max(noiseFloor, MANUAL_FLOOR * 0.3);
             }
 
-            const onsetThresh  = Math.max(MANUAL_FLOOR, noiseFloor * ONSET_MULT);
-            const offsetThresh = Math.max(MANUAL_FLOOR * 0.6, noiseFloor * OFFSET_MULT);
             volFill.className = 'vol-fill' + (level > onsetThresh ? ' active' : '');
+
+            // Live VAD debug display (visible when settings panel is open)
+            vadDebug.textContent =
+                `floor:${noiseFloor.toFixed(4)}  onset:${onsetThresh.toFixed(4)}  offset:${offsetThresh.toFixed(4)}  now:${level.toFixed(4)}`;
 
             if (!inSpeech) {
                 if (level > onsetThresh) {
