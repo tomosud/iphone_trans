@@ -285,19 +285,25 @@
 
         <!-- Nav -->
         <nav class="nav-panel" translate="no">
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
                 <a class="nav-link-button" href="index.html">← Home</a>
                 <a class="nav-link-button" href="voice.html">🎤 Voice input</a>
+            </div>
+            <div>
+                <a id="savedLink" class="nav-link-button" href="saved.html">Open saved texts</a>
             </div>
         </nav>
 
     </div>
 
+    <script src="storage.js"></script>
     <script type="module">
         import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.0';
 
         env.allowLocalModels = false;
         env.useBrowserCache  = true;
+
+        const storageApi = window.TransStorage;
 
         // ── DOM refs ──────────────────────────────────────────────────────────
         const modelSelect  = document.getElementById('modelSelect');
@@ -340,6 +346,7 @@
         });
 
         // ── State ─────────────────────────────────────────────────────────────
+        let accumulatedText = '';  // all transcribed results joined, for storage
         let transcriber   = null;
         let audioCtx      = null;
         let mediaStream   = null;
@@ -453,6 +460,10 @@
                 const text = res.text.trim();
                 placeholder.className = 'result-entry';
                 placeholder.textContent = text || '(no result)';
+                if (text) {
+                    accumulatedText = accumulatedText ? accumulatedText + '\n' + text : text;
+                    void storageApi.saveLatestText(accumulatedText);
+                }
             } catch (err) {
                 console.error(err);
                 placeholder.className = 'result-entry';
@@ -584,9 +595,30 @@
             }
         });
 
-        clearBtn.addEventListener('click', () => {
+        async function clearAll() {
+            if (accumulatedText) {
+                await Promise.all([
+                    storageApi.saveLatestText(accumulatedText),
+                    storageApi.archiveText(accumulatedText, 'clear'),
+                ]);
+                accumulatedText = '';
+            }
             resultList.querySelectorAll('.result-entry').forEach(el => el.remove());
             emptyMsg.style.display = '';
+        }
+
+        clearBtn.addEventListener('click', () => void clearAll());
+
+        const savedLink = document.getElementById('savedLink');
+        savedLink.addEventListener('click', async (e) => {
+            e.preventDefault();
+            if (accumulatedText) {
+                await Promise.all([
+                    storageApi.saveLatestText(accumulatedText),
+                    storageApi.archiveText(accumulatedText, 'clear'),
+                ]);
+            }
+            window.location.href = savedLink.href;
         });
 
         modelSelect.addEventListener('change', loadModel);
