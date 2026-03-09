@@ -159,10 +159,18 @@
             <div class="model-select">
                 <label for="modelSelect">Model:</label>
                 <select id="modelSelect">
-                    <option value="Xenova/whisper-tiny.en">whisper-tiny.en (EN only · fastest · ~75MB)</option>
                     <option value="Xenova/whisper-tiny">whisper-tiny (multilingual · ~75MB)</option>
-                    <option value="Xenova/whisper-base.en">whisper-base.en (EN only · better · ~142MB)</option>
                     <option value="Xenova/whisper-base">whisper-base (multilingual · ~142MB)</option>
+                    <option value="Xenova/whisper-tiny.en">whisper-tiny.en (EN only · fastest · ~75MB)</option>
+                    <option value="Xenova/whisper-base.en">whisper-base.en (EN only · ~142MB)</option>
+                </select>
+            </div>
+            <div class="model-select" style="margin-top:6px;">
+                <label for="langSelect">Language:</label>
+                <select id="langSelect">
+                    <option value="ja">日本語</option>
+                    <option value="en">English</option>
+                    <option value="">Auto detect</option>
                 </select>
             </div>
 
@@ -268,6 +276,7 @@
         const sendBtn       = document.getElementById('sendBtn');
         const volWrap       = document.getElementById('volWrap');
         const volFill       = document.getElementById('volFill');
+        const langSelect    = document.getElementById('langSelect');
         const threshSlider  = document.getElementById('threshSlider');
         const threshVal     = document.getElementById('threshVal');
         const silenceSlider = document.getElementById('silenceSlider');
@@ -300,12 +309,15 @@
         function saveVadSettings() {
             localStorage.setItem('vad_thresh',  threshSlider.value);
             localStorage.setItem('vad_silence', silenceSlider.value);
+            localStorage.setItem('whisper_lang', langSelect.value);
         }
         function loadVadSettings() {
             const t = localStorage.getItem('vad_thresh');
             const s = localStorage.getItem('vad_silence');
-            if (t) { threshSlider.value  = t; }
+            const l = localStorage.getItem('whisper_lang');
+            if (t) { threshSlider.value = t; }
             if (s) { silenceSlider.value = s; }
+            if (l !== null) { langSelect.value = l; }
             // apply loaded values
             MANUAL_FLOOR          = threshSlider.value / 1000;
             SILENCE_CHUNKS_NEEDED = parseInt(silenceSlider.value);
@@ -324,6 +336,8 @@
             silenceVal.textContent = (SILENCE_CHUNKS_NEEDED * CHUNK_MS / 1000).toFixed(1);
             saveVadSettings();
         });
+
+        langSelect.addEventListener('change', saveVadSettings);
 
         // ── Debug log ─────────────────────────────────────────────────────────
         let _logLines   = [];
@@ -585,13 +599,14 @@
             renderDisplay();
             stopRecTimer();
             startProcTimer(audioSec);
-            addLog(`⚙️ Whisper開始: 音声 ${audioSec.toFixed(2)}s`);
+            const selectedLang = langSelect.value || null;
+            const modelName    = modelSelect.value.split('/').pop();
+            addLog(`⚙️ Whisper開始: 音声 ${audioSec.toFixed(2)}s  model=${modelName}  lang=${selectedLang ?? 'auto'}`);
 
             const t0 = Date.now();
             try {
-                const isEnOnly = modelSelect.value.includes('.en');
                 const res = await transcriber(audio, {
-                    language: isEnOnly ? 'en' : null,
+                    language: selectedLang,
                     task: 'transcribe',
                 });
                 const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
