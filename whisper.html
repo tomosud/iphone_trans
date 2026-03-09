@@ -38,15 +38,11 @@
             cursor: pointer;
         }
 
-        .model-select select:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
+        .model-select select:disabled { opacity: 0.5; cursor: not-allowed; }
 
         .status-bar {
             display: flex;
             align-items: center;
-            justify-content: space-between;
             gap: 10px;
             padding: 10px 14px;
             background: var(--panel);
@@ -63,15 +59,14 @@
             flex-shrink: 0;
             transition: background 0.2s;
         }
+        .status-dot.loading    { background: #f59e0b; animation: blink 1.2s ease-in-out infinite; }
+        .status-dot.listening  { background: #10b981; }
+        .status-dot.speaking   { background: #ef4444; animation: blink 0.8s ease-in-out infinite; }
+        .status-dot.processing { background: #3b82f6; animation: blink 1.2s ease-in-out infinite; }
 
-        .status-dot.loading  { background: #f59e0b; animation: pulse-dot 1.2s ease-in-out infinite; }
-        .status-dot.ready    { background: #10b981; }
-        .status-dot.recording{ background: #ef4444; animation: pulse-dot 1.2s ease-in-out infinite; }
-        .status-dot.processing{ background: #3b82f6; animation: pulse-dot 1.2s ease-in-out infinite; }
-
-        @keyframes pulse-dot {
+        @keyframes blink {
             0%, 100% { opacity: 1; }
-            50% { opacity: 0.3; }
+            50%       { opacity: 0.25; }
         }
 
         .progress-bar {
@@ -82,9 +77,7 @@
             overflow: hidden;
             display: none;
         }
-
         .progress-bar.visible { display: block; }
-
         .progress-fill {
             height: 100%;
             background: linear-gradient(90deg, #3b82f6, #8b5cf6);
@@ -93,78 +86,102 @@
             width: 0%;
         }
 
-        .timer {
-            font-size: 2rem;
-            font-weight: bold;
-            color: #ef4444;
-            text-align: center;
-            font-variant-numeric: tabular-nums;
+        /* Volume meter */
+        .vol-wrap {
             display: none;
+            align-items: center;
+            gap: 8px;
         }
-
-        .timer.visible { display: block; }
-
-        .controls {
-            display: flex;
-            gap: 12px;
-            justify-content: center;
+        .vol-wrap.visible { display: flex; }
+        .vol-label { font-size: 0.8rem; color: var(--muted); white-space: nowrap; }
+        .vol-track {
+            flex: 1;
+            height: 6px;
+            background: var(--panel-border);
+            border-radius: 3px;
+            overflow: hidden;
         }
+        .vol-fill {
+            height: 100%;
+            border-radius: 3px;
+            width: 0%;
+            transition: width 0.05s linear, background 0.1s;
+            background: #10b981;
+        }
+        .vol-fill.active { background: #ef4444; }
 
+        /* VAD config row */
+        .vad-config {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            font-size: 0.85rem;
+        }
+        .vad-config label { color: var(--muted); display: block; margin-bottom: 3px; }
+        .vad-config input[type=range] { width: 100%; }
+        .vad-config span { font-size: 0.8rem; color: var(--fg); }
+
+        /* Controls */
+        .controls { display: flex; gap: 12px; }
         .btn-record {
-            flex: 1;
-            padding: 14px;
-            font-size: 1rem;
-            border: none;
-            border-radius: var(--radius);
-            cursor: pointer;
-            font-weight: 600;
-            background: #ef4444;
-            color: white;
-            transition: all 0.2s;
+            flex: 1; padding: 14px; font-size: 1rem;
+            border: none; border-radius: var(--radius);
+            cursor: pointer; font-weight: 600;
+            background: #10b981; color: white; transition: all 0.2s;
         }
-
         .btn-record:disabled { opacity: 0.4; cursor: not-allowed; }
-        .btn-record:not(:disabled):hover { background: #dc2626; }
-        .btn-record.recording { animation: pulse-btn 1.5s infinite; }
+        .btn-record.active { background: #ef4444; }
+        .btn-record.active:not(:disabled):hover { background: #dc2626; }
+        .btn-record:not(.active):not(:disabled):hover { background: #059669; }
 
-        @keyframes pulse-btn {
-            0%, 100% { transform: scale(1); }
-            50% { transform: scale(1.03); }
+        /* Results */
+        .result-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            min-height: 120px;
         }
 
-        .btn-stop {
-            flex: 1;
-            padding: 14px;
-            font-size: 1rem;
-            border: none;
-            border-radius: var(--radius);
-            cursor: pointer;
-            font-weight: 600;
-            background: var(--muted);
-            color: white;
-            transition: all 0.2s;
-        }
-
-        .btn-stop:disabled { opacity: 0.4; cursor: not-allowed; }
-        .btn-stop:not(:disabled):hover { opacity: 0.85; }
-
-        .result-box {
-            min-height: 140px;
-            padding: 16px;
+        .result-entry {
+            padding: 12px 14px;
             background: var(--panel);
             border: 1px solid var(--panel-border);
             border-radius: var(--radius);
             font-size: 1rem;
             line-height: 1.6;
-            white-space: pre-wrap;
             word-wrap: break-word;
             color: var(--fg);
+            animation: fadeIn 0.2s ease;
+        }
+        .result-entry.pending {
+            color: var(--muted);
+            border-style: dashed;
+            font-style: italic;
         }
 
-        .result-box:empty::before {
-            content: "Recognition result will appear here...";
-            color: var(--muted);
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(4px); }
+            to   { opacity: 1; transform: translateY(0); }
         }
+
+        .result-empty {
+            color: var(--muted);
+            font-size: 0.95rem;
+            text-align: center;
+            padding: 24px 0;
+        }
+
+        .clear-results {
+            font-size: 0.8rem;
+            color: var(--muted);
+            background: none;
+            border: none;
+            cursor: pointer;
+            text-decoration: underline;
+            padding: 0;
+            align-self: flex-end;
+        }
+        .clear-results:hover { color: var(--fg); }
 
         .info-text {
             font-size: 0.8rem;
@@ -176,14 +193,15 @@
 <body>
     <div class="whisper-shell">
 
-        <div style="display:flex;flex-direction:column;gap:12px;">
+        <!-- Top: model + status -->
+        <div style="display:flex;flex-direction:column;gap:10px;">
             <div class="model-select">
                 <label for="modelSelect">Model:</label>
                 <select id="modelSelect">
-                    <option value="Xenova/whisper-tiny.en">whisper-tiny.en (EN only · fastest · 75MB)</option>
-                    <option value="Xenova/whisper-tiny">whisper-tiny (multilingual · 75MB)</option>
-                    <option value="Xenova/whisper-base.en">whisper-base.en (EN only · better · 142MB)</option>
-                    <option value="Xenova/whisper-base">whisper-base (multilingual · 142MB)</option>
+                    <option value="Xenova/whisper-tiny.en">whisper-tiny.en (EN only · fastest · ~75MB)</option>
+                    <option value="Xenova/whisper-tiny">whisper-tiny (multilingual · ~75MB)</option>
+                    <option value="Xenova/whisper-base.en">whisper-base.en (EN only · better · ~142MB)</option>
+                    <option value="Xenova/whisper-base">whisper-base (multilingual · ~142MB)</option>
                 </select>
             </div>
 
@@ -195,24 +213,50 @@
             <div class="progress-bar" id="progressBar">
                 <div class="progress-fill" id="progressFill"></div>
             </div>
-        </div>
 
-        <div style="display:flex;flex-direction:column;gap:12px;">
-            <div class="timer" id="timer">00:00</div>
-
-            <div class="controls">
-                <button class="btn-record" id="recordBtn" disabled>🎙️ Start</button>
-                <button class="btn-stop"   id="stopBtn"   disabled>⏹️ Stop</button>
+            <div class="vol-wrap" id="volWrap">
+                <span class="vol-label">Level</span>
+                <div class="vol-track"><div class="vol-fill" id="volFill"></div></div>
             </div>
 
-            <div class="result-box" id="result"></div>
+            <!-- VAD sensitivity -->
+            <details style="font-size:0.85rem;">
+                <summary style="cursor:pointer;color:var(--muted);user-select:none;">VAD settings</summary>
+                <div class="vad-config" style="margin-top:8px;">
+                    <div>
+                        <label>Silence threshold <span id="threshVal">0.010</span></label>
+                        <input type="range" id="threshSlider" min="1" max="50" value="10">
+                    </div>
+                    <div>
+                        <label>Silence duration <span id="silenceVal">1.5</span>s</label>
+                        <input type="range" id="silenceSlider" min="5" max="40" value="15">
+                    </div>
+                </div>
+            </details>
+        </div>
+
+        <!-- Middle: controls + results -->
+        <div style="display:flex;flex-direction:column;gap:12px;">
+            <div class="controls">
+                <button class="btn-record" id="recordBtn" disabled>🎙️ Start listening</button>
+            </div>
+
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+                <span style="font-size:0.85rem;color:var(--muted);">Results</span>
+                <button class="clear-results" id="clearBtn">Clear</button>
+            </div>
+
+            <div class="result-list" id="resultList">
+                <p class="result-empty" id="emptyMsg">Results will appear here as you speak…</p>
+            </div>
 
             <p class="info-text">
-                First load downloads model (~75–142 MB) and caches it in browser.<br>
-                Audio is never sent to any server.
+                First load downloads model (~75–142 MB) and caches it.<br>
+                Mic &amp; audio never leave your device.
             </p>
         </div>
 
+        <!-- Nav -->
         <nav class="nav-panel" translate="no">
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                 <a class="nav-link-button" href="index.html">← Home</a>
@@ -226,40 +270,83 @@
         import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.0';
 
         env.allowLocalModels = false;
-        env.useBrowserCache = true;
+        env.useBrowserCache  = true;
 
-        const modelSelect   = document.getElementById('modelSelect');
-        const statusDot     = document.getElementById('statusDot');
-        const statusText    = document.getElementById('statusText');
-        const progressBar   = document.getElementById('progressBar');
-        const progressFill  = document.getElementById('progressFill');
-        const recordBtn     = document.getElementById('recordBtn');
-        const stopBtn       = document.getElementById('stopBtn');
-        const resultEl      = document.getElementById('result');
-        const timerEl       = document.getElementById('timer');
+        // ── DOM refs ──────────────────────────────────────────────────────────
+        const modelSelect  = document.getElementById('modelSelect');
+        const statusDot    = document.getElementById('statusDot');
+        const statusText   = document.getElementById('statusText');
+        const progressBar  = document.getElementById('progressBar');
+        const progressFill = document.getElementById('progressFill');
+        const recordBtn    = document.getElementById('recordBtn');
+        const resultList   = document.getElementById('resultList');
+        const emptyMsg     = document.getElementById('emptyMsg');
+        const clearBtn     = document.getElementById('clearBtn');
+        const volWrap      = document.getElementById('volWrap');
+        const volFill      = document.getElementById('volFill');
+        const threshSlider = document.getElementById('threshSlider');
+        const threshVal    = document.getElementById('threshVal');
+        const silenceSlider= document.getElementById('silenceSlider');
+        const silenceVal   = document.getElementById('silenceVal');
 
-        let transcriber = null;
-        let audioContext = null;
-        let mediaStream = null;
-        let processor = null;
-        let audioChunks = [];
-        let isRecording = false;
-        let timerInterval = null;
-        let recordingStartTime = null;
+        // ── VAD parameters (adjustable) ───────────────────────────────────────
+        // RMS threshold below which audio is considered silence
+        let SILENCE_THRESHOLD = 0.010;
+        // Consecutive silent chunks needed to end a speech segment
+        let SILENCE_CHUNKS_NEEDED = 15; // × chunk duration ≈ 1.5 s at 1024 samp/16kHz
+
+        const SAMPLE_RATE    = 16000;
+        const CHUNK_SIZE     = 1024;           // samples per ScriptProcessor call
+        const CHUNK_MS       = CHUNK_SIZE / SAMPLE_RATE * 1000; // ~64 ms
+        const PRE_ROLL_CHUNKS = 5;             // keep ~320 ms before speech onset
+        const MIN_SPEECH_CHUNKS = 5;           // ignore clips shorter than ~320 ms
+
+        threshSlider.addEventListener('input', () => {
+            SILENCE_THRESHOLD = threshSlider.value / 1000;
+            threshVal.textContent = SILENCE_THRESHOLD.toFixed(3);
+        });
+        silenceSlider.addEventListener('input', () => {
+            SILENCE_CHUNKS_NEEDED = parseInt(silenceSlider.value);
+            silenceVal.textContent = (SILENCE_CHUNKS_NEEDED * CHUNK_MS / 1000).toFixed(1);
+        });
+
+        // ── State ─────────────────────────────────────────────────────────────
+        let transcriber   = null;
+        let audioCtx      = null;
+        let mediaStream   = null;
+        let processor     = null;
+        let isListening   = false;
+        let isProcessing  = false; // transcription in flight
+
+        // VAD state
+        let inSpeech      = false;
+        let silenceCount  = 0;
+        let speechChunks  = [];   // chunks of current speech segment
+        let preRoll       = [];   // ring-buffer of recent chunks before speech
+
+        // ── Helpers ───────────────────────────────────────────────────────────
+        function rms(buf) {
+            let sum = 0;
+            for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+            return Math.sqrt(sum / buf.length);
+        }
 
         function setStatus(text, state = '') {
             statusText.textContent = text;
             statusDot.className = 'status-dot' + (state ? ' ' + state : '');
         }
 
-        function updateTimer() {
-            if (!recordingStartTime) return;
-            const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
-            const m = Math.floor(elapsed / 60).toString().padStart(2, '0');
-            const s = (elapsed % 60).toString().padStart(2, '0');
-            timerEl.textContent = `${m}:${s}`;
+        function addResult(text, pending = false) {
+            emptyMsg.style.display = 'none';
+            const el = document.createElement('div');
+            el.className = 'result-entry' + (pending ? ' pending' : '');
+            el.textContent = text;
+            resultList.appendChild(el);
+            el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            return el;
         }
 
+        // ── Model loading ─────────────────────────────────────────────────────
         async function loadModel() {
             const modelName = modelSelect.value;
             setStatus('Loading model…', 'loading');
@@ -280,99 +367,150 @@
                         }
                     }
                 });
-
-                setStatus('Ready — tap Start to record', 'ready');
+                setStatus('Ready — tap Start to listen', 'listening');
                 recordBtn.disabled = false;
-                setTimeout(() => progressBar.classList.remove('visible'), 1000);
-
+                setTimeout(() => progressBar.classList.remove('visible'), 800);
             } catch (err) {
                 console.error(err);
-                setStatus('Failed to load model: ' + err.message, '');
+                setStatus('Model load failed: ' + err.message, '');
                 modelSelect.disabled = false;
             }
         }
 
-        async function startRecording() {
-            try {
-                audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-                mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16000 } });
+        // ── Transcribe a collected speech segment ─────────────────────────────
+        async function transcribeSegment(chunks) {
+            const totalLen = chunks.reduce((a, c) => a + c.length, 0);
+            const audio = new Float32Array(totalLen);
+            let off = 0;
+            for (const c of chunks) { audio.set(c, off); off += c.length; }
 
-                const source = audioContext.createMediaStreamSource(mediaStream);
-                processor = audioContext.createScriptProcessor(4096, 1, 1);
-                audioChunks = [];
-
-                processor.onaudioprocess = (e) => {
-                    if (isRecording) {
-                        audioChunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
-                    }
-                };
-
-                source.connect(processor);
-                processor.connect(audioContext.destination);
-
-                isRecording = true;
-                recordingStartTime = Date.now();
-                timerEl.classList.add('visible');
-                timerEl.textContent = '00:00';
-                timerInterval = setInterval(updateTimer, 1000);
-
-                setStatus('Recording…', 'recording');
-                recordBtn.disabled = true;
-                recordBtn.classList.add('recording');
-                stopBtn.disabled = false;
-                modelSelect.disabled = true;
-
-            } catch (err) {
-                console.error(err);
-                setStatus('Microphone access failed: ' + err.message, '');
-            }
-        }
-
-        async function stopRecording() {
-            isRecording = false;
-            clearInterval(timerInterval);
-            timerEl.classList.remove('visible');
-
-            if (processor)    { processor.disconnect(); processor = null; }
-            if (mediaStream)  { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
-            if (audioContext) { await audioContext.close(); audioContext = null; }
-
-            recordBtn.classList.remove('recording');
-            stopBtn.disabled = true;
-
-            if (audioChunks.length === 0) {
-                setStatus('No audio captured', '');
-                recordBtn.disabled = false;
-                return;
-            }
-
-            const totalLength = audioChunks.reduce((a, c) => a + c.length, 0);
-            const audioData = new Float32Array(totalLength);
-            let offset = 0;
-            for (const chunk of audioChunks) { audioData.set(chunk, offset); offset += chunk.length; }
-
+            const placeholder = addResult('Transcribing…', true);
+            isProcessing = true;
             setStatus('Processing…', 'processing');
-            resultEl.textContent = '';
 
             try {
-                const res = await transcriber(audioData, {
+                const res = await transcriber(audio, {
                     language: modelSelect.value.includes('.en') ? 'en' : null,
                     task: 'transcribe'
                 });
-                resultEl.textContent = res.text.trim() || '(no result)';
-                setStatus('Done', 'ready');
+                const text = res.text.trim();
+                placeholder.className = 'result-entry';
+                placeholder.textContent = text || '(no result)';
             } catch (err) {
                 console.error(err);
-                setStatus('Transcription failed: ' + err.message, '');
-                resultEl.textContent = 'Error: ' + err.message;
+                placeholder.className = 'result-entry';
+                placeholder.textContent = '⚠️ ' + err.message;
             }
 
-            recordBtn.disabled = false;
+            isProcessing = false;
+            if (isListening) setStatus('Listening…', 'listening');
         }
 
+        // ── VAD audio handler (called per ScriptProcessor chunk) ──────────────
+        function onAudioChunk(samples) {
+            // rolling pre-roll buffer
+            preRoll.push(samples);
+            if (preRoll.length > PRE_ROLL_CHUNKS) preRoll.shift();
+
+            const level = rms(samples);
+
+            // update volume meter (smoothed)
+            const pct = Math.min(100, level / 0.1 * 100);
+            volFill.style.width = pct + '%';
+            volFill.className = 'vol-fill' + (level > SILENCE_THRESHOLD ? ' active' : '');
+
+            if (!inSpeech) {
+                if (level > SILENCE_THRESHOLD) {
+                    // speech onset — include pre-roll
+                    inSpeech = true;
+                    silenceCount = 0;
+                    speechChunks = [...preRoll];
+                    setStatus('Speaking…', 'speaking');
+                }
+            } else {
+                speechChunks.push(samples);
+
+                if (level < SILENCE_THRESHOLD) {
+                    silenceCount++;
+                    if (silenceCount >= SILENCE_CHUNKS_NEEDED) {
+                        // speech ended
+                        inSpeech = false;
+                        silenceCount = 0;
+                        if (speechChunks.length >= MIN_SPEECH_CHUNKS) {
+                            const seg = speechChunks.slice();
+                            speechChunks = [];
+                            transcribeSegment(seg);
+                        } else {
+                            speechChunks = [];
+                            if (isListening) setStatus('Listening…', 'listening');
+                        }
+                    }
+                } else {
+                    silenceCount = 0;
+                }
+            }
+        }
+
+        // ── Start / stop listening ────────────────────────────────────────────
+        async function startListening() {
+            try {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+                mediaStream = await navigator.mediaDevices.getUserMedia({
+                    audio: { channelCount: 1, sampleRate: SAMPLE_RATE, echoCancellation: true, noiseSuppression: true }
+                });
+
+                const source = audioCtx.createMediaStreamSource(mediaStream);
+                processor = audioCtx.createScriptProcessor(CHUNK_SIZE, 1, 1);
+                processor.onaudioprocess = (e) => {
+                    if (isListening) onAudioChunk(new Float32Array(e.inputBuffer.getChannelData(0)));
+                };
+                source.connect(processor);
+                processor.connect(audioCtx.destination);
+
+                // reset VAD state
+                inSpeech = false; silenceCount = 0; speechChunks = []; preRoll = [];
+                isListening = true;
+
+                setStatus('Listening…', 'listening');
+                recordBtn.textContent = '⏹️ Stop listening';
+                recordBtn.classList.add('active');
+                modelSelect.disabled = true;
+                volWrap.classList.add('visible');
+
+            } catch (err) {
+                console.error(err);
+                setStatus('Mic error: ' + err.message, '');
+            }
+        }
+
+        function stopListening() {
+            isListening = false;
+            inSpeech = false;
+
+            if (processor)   { processor.disconnect(); processor = null; }
+            if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+            if (audioCtx)    { audioCtx.close(); audioCtx = null; }
+
+            recordBtn.textContent = '🎙️ Start listening';
+            recordBtn.classList.remove('active');
+            modelSelect.disabled = false;
+            volWrap.classList.remove('visible');
+            volFill.style.width = '0%';
+            setStatus('Ready — tap Start to listen', 'listening');
+        }
+
+        // ── Event listeners ───────────────────────────────────────────────────
+        recordBtn.addEventListener('click', () => {
+            if (isListening) stopListening();
+            else startListening();
+        });
+
+        clearBtn.addEventListener('click', () => {
+            resultList.querySelectorAll('.result-entry').forEach(el => el.remove());
+            emptyMsg.style.display = '';
+        });
+
         modelSelect.addEventListener('change', loadModel);
-        recordBtn.addEventListener('click', startRecording);
-        stopBtn.addEventListener('click', stopRecording);
 
         loadModel();
     </script>
