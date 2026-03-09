@@ -146,6 +146,16 @@
         .btn-record.active { background: #ef4444; }
         .btn-record.active:not(:disabled):hover { background: #dc2626; }
         .btn-record:not(.active):not(:disabled):hover { background: #059669; }
+        .btn-send {
+            padding: 14px 18px; font-size: 1rem;
+            border: none; border-radius: var(--radius);
+            cursor: pointer; font-weight: 600;
+            background: #3b82f6; color: white; transition: all 0.2s;
+            display: none;
+        }
+        .btn-send:not(:disabled):hover { background: #2563eb; }
+        .btn-send:disabled { opacity: 0.4; cursor: not-allowed; }
+        .btn-send.visible { display: block; }
 
         /* Results */
         .result-list {
@@ -255,6 +265,7 @@
         <div style="display:flex;flex-direction:column;gap:12px;">
             <div class="controls">
                 <button class="btn-record" id="recordBtn" disabled>🎙️ Start listening</button>
+                <button class="btn-send" id="sendBtn" disabled>送信</button>
             </div>
 
             <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -299,6 +310,7 @@
         const resultList   = document.getElementById('resultList');
         const emptyMsg     = document.getElementById('emptyMsg');
         const clearBtn     = document.getElementById('clearBtn');
+        const sendBtn      = document.getElementById('sendBtn');
         const volWrap      = document.getElementById('volWrap');
         const volFill      = document.getElementById('volFill');
         const threshSlider = document.getElementById('threshSlider');
@@ -521,6 +533,8 @@
                 recordBtn.classList.add('active');
                 modelSelect.disabled = true;
                 volWrap.classList.add('visible');
+                sendBtn.classList.add('visible');
+                sendBtn.disabled = false;
 
             } catch (err) {
                 console.error(err);
@@ -528,7 +542,19 @@
             }
         }
 
+        // Flush any buffered speech to transcription
+        function flushBuffer() {
+            const chunks = inSpeech ? speechChunks.slice() : speechChunks.slice();
+            inSpeech = false;
+            silenceCount = 0;
+            speechChunks = [];
+            if (chunks.length >= MIN_SPEECH_CHUNKS) {
+                transcribeSegment(chunks);
+            }
+        }
+
         function stopListening() {
+            flushBuffer();
             isListening = false;
             inSpeech = false;
 
@@ -541,6 +567,8 @@
             modelSelect.disabled = false;
             volWrap.classList.remove('visible');
             volFill.style.width = '0%';
+            sendBtn.classList.remove('visible');
+            sendBtn.disabled = true;
             setStatus('Ready — tap Start to listen', 'listening');
         }
 
@@ -548,6 +576,12 @@
         recordBtn.addEventListener('click', () => {
             if (isListening) stopListening();
             else startListening();
+        });
+
+        sendBtn.addEventListener('click', () => {
+            if (speechChunks.length >= MIN_SPEECH_CHUNKS) {
+                flushBuffer();
+            }
         });
 
         clearBtn.addEventListener('click', () => {
