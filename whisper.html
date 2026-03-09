@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Whisper Local ASR</title>
+    <link rel="stylesheet" href="styles.css">
+    <style>
+        .whisper-shell {
+            width: min(640px, 100%);
+            min-height: var(--app-height);
+            height: auto;
+            margin: 0 auto;
+            display: grid;
+            grid-template-rows: auto 1fr auto;
+            gap: var(--gap);
+            padding:
+                calc(env(safe-area-inset-top, 0px) + 12px)
+                12px
+                calc(env(safe-area-inset-bottom, 0px) + 12px);
+        }
+
+        .model-select label {
+            display: block;
+            font-size: 0.9rem;
+            color: var(--muted);
+            margin-bottom: 8px;
+        }
+
+        .model-select select {
+            width: 100%;
+            padding: 10px 12px;
+            font-size: 1rem;
+            border: 1px solid var(--panel-border);
+            border-radius: var(--radius);
+            background: var(--panel);
+            color: var(--fg);
+            cursor: pointer;
+        }
+
+        .model-select select:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .status-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 10px 14px;
+            background: var(--panel);
+            border: 1px solid var(--panel-border);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--muted);
+            flex-shrink: 0;
+            transition: background 0.2s;
+        }
+
+        .status-dot.loading  { background: #f59e0b; animation: pulse-dot 1.2s ease-in-out infinite; }
+        .status-dot.ready    { background: #10b981; }
+        .status-dot.recording{ background: #ef4444; animation: pulse-dot 1.2s ease-in-out infinite; }
+        .status-dot.processing{ background: #3b82f6; animation: pulse-dot 1.2s ease-in-out infinite; }
+
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 4px;
+            background: var(--panel-border);
+            border-radius: 2px;
+            overflow: hidden;
+            display: none;
+        }
+
+        .progress-bar.visible { display: block; }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #3b82f6, #8b5cf6);
+            border-radius: 2px;
+            transition: width 0.3s ease;
+            width: 0%;
+        }
+
+        .timer {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #ef4444;
+            text-align: center;
+            font-variant-numeric: tabular-nums;
+            display: none;
+        }
+
+        .timer.visible { display: block; }
+
+        .controls {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+        }
+
+        .btn-record {
+            flex: 1;
+            padding: 14px;
+            font-size: 1rem;
+            border: none;
+            border-radius: var(--radius);
+            cursor: pointer;
+            font-weight: 600;
+            background: #ef4444;
+            color: white;
+            transition: all 0.2s;
+        }
+
+        .btn-record:disabled { opacity: 0.4; cursor: not-allowed; }
+        .btn-record:not(:disabled):hover { background: #dc2626; }
+        .btn-record.recording { animation: pulse-btn 1.5s infinite; }
+
+        @keyframes pulse-btn {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.03); }
+        }
+
+        .btn-stop {
+            flex: 1;
+            padding: 14px;
+            font-size: 1rem;
+            border: none;
+            border-radius: var(--radius);
+            cursor: pointer;
+            font-weight: 600;
+            background: var(--muted);
+            color: white;
+            transition: all 0.2s;
+        }
+
+        .btn-stop:disabled { opacity: 0.4; cursor: not-allowed; }
+        .btn-stop:not(:disabled):hover { opacity: 0.85; }
+
+        .result-box {
+            min-height: 140px;
+            padding: 16px;
+            background: var(--panel);
+            border: 1px solid var(--panel-border);
+            border-radius: var(--radius);
+            font-size: 1rem;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            color: var(--fg);
+        }
+
+        .result-box:empty::before {
+            content: "Recognition result will appear here...";
+            color: var(--muted);
+        }
+
+        .info-text {
+            font-size: 0.8rem;
+            color: var(--muted);
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="whisper-shell">
+
+        <div style="display:flex;flex-direction:column;gap:12px;">
+            <div class="model-select">
+                <label for="modelSelect">Model:</label>
+                <select id="modelSelect">
+                    <option value="Xenova/whisper-tiny.en">whisper-tiny.en (EN only · fastest · 75MB)</option>
+                    <option value="Xenova/whisper-tiny">whisper-tiny (multilingual · 75MB)</option>
+                    <option value="Xenova/whisper-base.en">whisper-base.en (EN only · better · 142MB)</option>
+                    <option value="Xenova/whisper-base">whisper-base (multilingual · 142MB)</option>
+                </select>
+            </div>
+
+            <div class="status-bar">
+                <div class="status-dot" id="statusDot"></div>
+                <div id="statusText" style="flex:1;font-size:0.9rem;">Loading model…</div>
+            </div>
+
+            <div class="progress-bar" id="progressBar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+        </div>
+
+        <div style="display:flex;flex-direction:column;gap:12px;">
+            <div class="timer" id="timer">00:00</div>
+
+            <div class="controls">
+                <button class="btn-record" id="recordBtn" disabled>🎙️ Start</button>
+                <button class="btn-stop"   id="stopBtn"   disabled>⏹️ Stop</button>
+            </div>
+
+            <div class="result-box" id="result"></div>
+
+            <p class="info-text">
+                First load downloads model (~75–142 MB) and caches it in browser.<br>
+                Audio is never sent to any server.
+            </p>
+        </div>
+
+        <nav class="nav-panel" translate="no">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                <a class="nav-link-button" href="index.html">← Home</a>
+                <a class="nav-link-button" href="voice.html">🎤 Voice input</a>
+            </div>
+        </nav>
+
+    </div>
+
+    <script type="module">
+        import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.0';
+
+        env.allowLocalModels = false;
+        env.useBrowserCache = true;
+
+        const modelSelect   = document.getElementById('modelSelect');
+        const statusDot     = document.getElementById('statusDot');
+        const statusText    = document.getElementById('statusText');
+        const progressBar   = document.getElementById('progressBar');
+        const progressFill  = document.getElementById('progressFill');
+        const recordBtn     = document.getElementById('recordBtn');
+        const stopBtn       = document.getElementById('stopBtn');
+        const resultEl      = document.getElementById('result');
+        const timerEl       = document.getElementById('timer');
+
+        let transcriber = null;
+        let audioContext = null;
+        let mediaStream = null;
+        let processor = null;
+        let audioChunks = [];
+        let isRecording = false;
+        let timerInterval = null;
+        let recordingStartTime = null;
+
+        function setStatus(text, state = '') {
+            statusText.textContent = text;
+            statusDot.className = 'status-dot' + (state ? ' ' + state : '');
+        }
+
+        function updateTimer() {
+            if (!recordingStartTime) return;
+            const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
+            const m = Math.floor(elapsed / 60).toString().padStart(2, '0');
+            const s = (elapsed % 60).toString().padStart(2, '0');
+            timerEl.textContent = `${m}:${s}`;
+        }
+
+        async function loadModel() {
+            const modelName = modelSelect.value;
+            setStatus('Loading model…', 'loading');
+            progressBar.classList.add('visible');
+            progressFill.style.width = '0%';
+            recordBtn.disabled = true;
+            modelSelect.disabled = true;
+
+            try {
+                transcriber = await pipeline('automatic-speech-recognition', modelName, {
+                    progress_callback: (p) => {
+                        if (p.status === 'progress') {
+                            const pct = Math.round((p.loaded / p.total) * 100);
+                            progressFill.style.width = `${pct}%`;
+                            setStatus(`Downloading… ${pct}%`, 'loading');
+                        } else if (p.status === 'done') {
+                            progressFill.style.width = '100%';
+                        }
+                    }
+                });
+
+                setStatus('Ready — tap Start to record', 'ready');
+                recordBtn.disabled = false;
+                setTimeout(() => progressBar.classList.remove('visible'), 1000);
+
+            } catch (err) {
+                console.error(err);
+                setStatus('Failed to load model: ' + err.message, '');
+                modelSelect.disabled = false;
+            }
+        }
+
+        async function startRecording() {
+            try {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+                mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16000 } });
+
+                const source = audioContext.createMediaStreamSource(mediaStream);
+                processor = audioContext.createScriptProcessor(4096, 1, 1);
+                audioChunks = [];
+
+                processor.onaudioprocess = (e) => {
+                    if (isRecording) {
+                        audioChunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+                    }
+                };
+
+                source.connect(processor);
+                processor.connect(audioContext.destination);
+
+                isRecording = true;
+                recordingStartTime = Date.now();
+                timerEl.classList.add('visible');
+                timerEl.textContent = '00:00';
+                timerInterval = setInterval(updateTimer, 1000);
+
+                setStatus('Recording…', 'recording');
+                recordBtn.disabled = true;
+                recordBtn.classList.add('recording');
+                stopBtn.disabled = false;
+                modelSelect.disabled = true;
+
+            } catch (err) {
+                console.error(err);
+                setStatus('Microphone access failed: ' + err.message, '');
+            }
+        }
+
+        async function stopRecording() {
+            isRecording = false;
+            clearInterval(timerInterval);
+            timerEl.classList.remove('visible');
+
+            if (processor)    { processor.disconnect(); processor = null; }
+            if (mediaStream)  { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+            if (audioContext) { await audioContext.close(); audioContext = null; }
+
+            recordBtn.classList.remove('recording');
+            stopBtn.disabled = true;
+
+            if (audioChunks.length === 0) {
+                setStatus('No audio captured', '');
+                recordBtn.disabled = false;
+                return;
+            }
+
+            const totalLength = audioChunks.reduce((a, c) => a + c.length, 0);
+            const audioData = new Float32Array(totalLength);
+            let offset = 0;
+            for (const chunk of audioChunks) { audioData.set(chunk, offset); offset += chunk.length; }
+
+            setStatus('Processing…', 'processing');
+            resultEl.textContent = '';
+
+            try {
+                const res = await transcriber(audioData, {
+                    language: modelSelect.value.includes('.en') ? 'en' : null,
+                    task: 'transcribe'
+                });
+                resultEl.textContent = res.text.trim() || '(no result)';
+                setStatus('Done', 'ready');
+            } catch (err) {
+                console.error(err);
+                setStatus('Transcription failed: ' + err.message, '');
+                resultEl.textContent = 'Error: ' + err.message;
+            }
+
+            recordBtn.disabled = false;
+        }
+
+        modelSelect.addEventListener('change', loadModel);
+        recordBtn.addEventListener('click', startRecording);
+        stopBtn.addEventListener('click', stopRecording);
+
+        loadModel();
+    </script>
+</body>
+</html>
