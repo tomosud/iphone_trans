@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Whisper Local ASR</title>
+    <link rel="stylesheet" href="styles.css">
+    <style>
+        .whisper-shell {
+            width: min(640px, 100%);
+            min-height: var(--app-height);
+            height: auto;
+            margin: 0 auto;
+            display: grid;
+            grid-template-rows: auto 1fr auto;
+            gap: var(--gap);
+            padding:
+                calc(env(safe-area-inset-top, 0px) + 12px)
+                12px
+                calc(env(safe-area-inset-bottom, 0px) + 12px);
+        }
+
+        .model-select label {
+            display: block;
+            font-size: 0.9rem;
+            color: var(--muted);
+            margin-bottom: 8px;
+        }
+
+        .model-select select {
+            width: 100%;
+            padding: 10px 12px;
+            font-size: 1rem;
+            border: 1px solid var(--panel-border);
+            border-radius: var(--radius);
+            background: var(--panel);
+            color: var(--fg);
+            cursor: pointer;
+        }
+
+        .model-select select:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .status-bar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 14px;
+            background: var(--panel);
+            border: 1px solid var(--panel-border);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+        }
+
+        .status-sub {
+            font-size: 0.75rem;
+            color: var(--muted);
+            min-height: 1.2em;
+            text-align: right;
+            opacity: 0;
+            transition: opacity 0.4s ease;
+            letter-spacing: 0.01em;
+        }
+        .status-sub.visible {
+            opacity: 1;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--muted);
+            flex-shrink: 0;
+            transition: background 0.2s;
+        }
+        .status-dot.loading    { background: #f59e0b; animation: blink 1.2s ease-in-out infinite; }
+        .status-dot.listening  { background: #10b981; }
+        .status-dot.speaking   { background: #ef4444; animation: blink 0.8s ease-in-out infinite; }
+        .status-dot.processing { background: #3b82f6; animation: blink 1.2s ease-in-out infinite; }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50%       { opacity: 0.25; }
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 4px;
+            background: var(--panel-border);
+            border-radius: 2px;
+            overflow: hidden;
+            display: none;
+        }
+        .progress-bar.visible { display: block; }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #3b82f6, #8b5cf6);
+            border-radius: 2px;
+            transition: width 0.3s ease;
+            width: 0%;
+        }
+
+        /* Volume meter */
+        .vol-wrap {
+            display: none;
+            align-items: center;
+            gap: 8px;
+        }
+        .vol-wrap.visible { display: flex; }
+        .vol-label { font-size: 0.8rem; color: var(--muted); white-space: nowrap; }
+        .vol-track {
+            flex: 1;
+            height: 6px;
+            background: var(--panel-border);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .vol-fill {
+            height: 100%;
+            border-radius: 3px;
+            width: 0%;
+            transition: width 0.05s linear, background 0.1s;
+            background: #10b981;
+        }
+        .vol-fill.active { background: #ef4444; }
+
+        /* VAD config row */
+        .vad-config {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            font-size: 0.85rem;
+        }
+        .vad-config label { color: var(--muted); display: block; margin-bottom: 3px; }
+        .vad-config input[type=range] { width: 100%; }
+        .vad-config span { font-size: 0.8rem; color: var(--fg); }
+
+        /* Controls */
+        .controls { display: flex; gap: 8px; flex: 1; }
+        .btn-record {
+            flex: 1; padding: 14px; font-size: 1rem;
+            border: none; border-radius: var(--radius);
+            cursor: pointer; font-weight: 600;
+            background: #10b981; color: white; transition: all 0.2s;
+        }
+        .btn-record:disabled { opacity: 0.4; cursor: not-allowed; }
+        .btn-record.active { background: #ef4444; }
+        .btn-record.active:not(:disabled):hover { background: #dc2626; }
+        .btn-record:not(.active):not(:disabled):hover { background: #059669; }
+        .btn-send {
+            padding: 14px 18px; font-size: 1rem;
+            border: none; border-radius: var(--radius);
+            cursor: pointer; font-weight: 600;
+            background: #3b82f6; color: white; transition: all 0.2s;
+            display: none;
+        }
+        .btn-send:not(:disabled):hover { background: #2563eb; }
+        .btn-send:disabled { opacity: 0.4; cursor: not-allowed; }
+        .btn-send.visible { display: block; }
+    </style>
+</head>
+<body>
+    <div class="whisper-shell">
+
+        <!-- Top: model + status -->
+        <div style="display:flex;flex-direction:column;gap:10px;">
+            <div class="model-select">
+                <label for="modelSelect">Model:</label>
+                <select id="modelSelect">
+                    <option value="Xenova/whisper-tiny.en">whisper-tiny.en (EN only · fastest · ~75MB)</option>
+                    <option value="Xenova/whisper-tiny">whisper-tiny (multilingual · ~75MB)</option>
+                    <option value="Xenova/whisper-base.en">whisper-base.en (EN only · better · ~142MB)</option>
+                    <option value="Xenova/whisper-base">whisper-base (multilingual · ~142MB)</option>
+                </select>
+            </div>
+
+            <div class="status-bar">
+                <div class="status-dot" id="statusDot"></div>
+                <div style="flex:1;">
+                    <div id="statusText" style="font-size:0.9rem;">Loading model…</div>
+                    <div class="status-sub" id="statusSub"></div>
+                </div>
+            </div>
+
+            <div class="progress-bar" id="progressBar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+
+            <div class="vol-wrap" id="volWrap">
+                <span class="vol-label">Level</span>
+                <div class="vol-track"><div class="vol-fill" id="volFill"></div></div>
+            </div>
+
+            <!-- VAD sensitivity -->
+            <details style="font-size:0.85rem;">
+                <summary style="cursor:pointer;color:var(--muted);user-select:none;">VAD settings</summary>
+                <div class="vad-config" style="margin-top:8px;">
+                    <div>
+                        <label>Silence threshold <span id="threshVal">0.010</span></label>
+                        <input type="range" id="threshSlider" min="1" max="50" value="10">
+                    </div>
+                    <div>
+                        <label>Silence duration <span id="silenceVal">1.5</span>s</label>
+                        <input type="range" id="silenceSlider" min="5" max="40" value="15">
+                    </div>
+                </div>
+            </details>
+        </div>
+
+        <!-- Middle: controls + display -->
+        <div style="display:flex;flex-direction:column;gap:var(--gap);">
+            <section class="input-panel">
+                <div class="input-row">
+                    <div class="controls">
+                        <button class="btn-record" id="recordBtn" disabled>🎙️ Start listening</button>
+                        <button class="btn-send" id="sendBtn" disabled>送信</button>
+                    </div>
+                    <button id="clearBtn" class="clear-button" type="button">Clear</button>
+                </div>
+            </section>
+
+            <section class="display-panel">
+                <div class="display-box">
+                    <div id="finalText" class="final-text" translate="yes"></div>
+                </div>
+            </section>
+        </div>
+
+        <!-- Nav -->
+        <nav class="nav-panel" translate="no">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+                <a class="nav-link-button" href="index.html">← Home</a>
+                <a class="nav-link-button" href="voice.html">🎤 Voice input</a>
+            </div>
+            <div>
+                <a id="savedLink" class="nav-link-button" href="saved.html">Open saved texts</a>
+            </div>
+        </nav>
+
+    </div>
+
+    <script src="storage.js"></script>
+    <script type="module">
+        import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.0';
+
+        env.allowLocalModels = false;
+        env.useBrowserCache  = true;
+
+        const storageApi = window.TransStorage;
+
+        // ── DOM refs ──────────────────────────────────────────────────────────
+        const modelSelect  = document.getElementById('modelSelect');
+        const statusSub    = document.getElementById('statusSub');
+        const statusDot    = document.getElementById('statusDot');
+        const statusText   = document.getElementById('statusText');
+        const progressBar  = document.getElementById('progressBar');
+        const progressFill = document.getElementById('progressFill');
+        const recordBtn    = document.getElementById('recordBtn');
+        const finalText    = document.getElementById('finalText');
+        const clearBtn     = document.getElementById('clearBtn');
+        const sendBtn      = document.getElementById('sendBtn');
+        const volWrap      = document.getElementById('volWrap');
+        const volFill      = document.getElementById('volFill');
+        const threshSlider = document.getElementById('threshSlider');
+        const threshVal    = document.getElementById('threshVal');
+        const silenceSlider= document.getElementById('silenceSlider');
+        const silenceVal   = document.getElementById('silenceVal');
+
+        // ── VAD parameters (adjustable) ───────────────────────────────────────
+        // RMS threshold below which audio is considered silence
+        let SILENCE_THRESHOLD = 0.010;
+        // Consecutive silent chunks needed to end a speech segment
+        let SILENCE_CHUNKS_NEEDED = 15; // × chunk duration ≈ 1.5 s at 1024 samp/16kHz
+
+        const SAMPLE_RATE    = 16000;
+        const CHUNK_SIZE     = 1024;           // samples per ScriptProcessor call
+        const CHUNK_MS       = CHUNK_SIZE / SAMPLE_RATE * 1000; // ~64 ms
+        const PRE_ROLL_CHUNKS = 5;             // keep ~320 ms before speech onset
+        const MIN_SPEECH_CHUNKS = 5;           // ignore clips shorter than ~320 ms
+
+        threshSlider.addEventListener('input', () => {
+            SILENCE_THRESHOLD = threshSlider.value / 1000;
+            threshVal.textContent = SILENCE_THRESHOLD.toFixed(3);
+        });
+        silenceSlider.addEventListener('input', () => {
+            SILENCE_CHUNKS_NEEDED = parseInt(silenceSlider.value);
+            silenceVal.textContent = (SILENCE_CHUNKS_NEEDED * CHUNK_MS / 1000).toFixed(1);
+        });
+
+        // ── State ─────────────────────────────────────────────────────────────
+        const placeholderText = 'Results will appear here as you speak…';
+        let results       = [];   // transcribed segments, oldest first
+        let isPending     = false;
+        let accumulatedText = '';
+        let transcriber   = null;
+        let audioCtx      = null;
+        let mediaStream   = null;
+        let processor     = null;
+        let isListening   = false;
+        let isProcessing  = false; // transcription in flight
+
+        // VAD state
+        let inSpeech      = false;
+        let silenceCount  = 0;
+        let speechChunks  = [];   // chunks of current speech segment
+        let preRoll       = [];   // ring-buffer of recent chunks before speech
+
+        // ── Helpers ───────────────────────────────────────────────────────────
+        function rms(buf) {
+            let sum = 0;
+            for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+            return Math.sqrt(sum / buf.length);
+        }
+
+        // Sub-status cycling messages per state
+        const SUB_MESSAGES = {
+            listening:  ['音声を待機中…', '話しかけてください', 'マイク稼働中'],
+            speaking:   ['録音中…', '音声を取り込んでいます', '発話を検出しました'],
+            processing: ['Whisper 処理中…', '音声を解析しています', 'もう少しお待ちください'],
+            loading:    ['モデルをロード中…', 'しばらくお待ちください', 'キャッシュを確認中…'],
+        };
+        let _subTimer = null;
+        let _subIdx   = 0;
+
+        function startSubCycle(state) {
+            clearInterval(_subTimer);
+            const msgs = SUB_MESSAGES[state];
+            if (!msgs) { statusSub.textContent = ''; statusSub.classList.remove('visible'); return; }
+            _subIdx = 0;
+            const show = () => {
+                statusSub.classList.remove('visible');
+                setTimeout(() => {
+                    statusSub.textContent = msgs[_subIdx % msgs.length];
+                    statusSub.classList.add('visible');
+                    _subIdx++;
+                }, 80);
+            };
+            show();
+            _subTimer = setInterval(show, 3000);
+        }
+
+        function setStatus(text, state = '') {
+            statusText.textContent = text;
+            statusDot.className = 'status-dot' + (state ? ' ' + state : '');
+            startSubCycle(state);
+        }
+
+        function renderDisplay() {
+            if (results.length === 0 && !isPending) {
+                finalText.textContent = placeholderText;
+            } else {
+                const parts = [...results].reverse();
+                if (isPending) parts.unshift('…');
+                finalText.textContent = parts.join('\n\n');
+            }
+            finalText.scrollTop = 0;
+        }
+
+        // ── Model loading ─────────────────────────────────────────────────────
+        async function loadModel() {
+            const modelName = modelSelect.value;
+            setStatus('Loading model…', 'loading');
+            progressBar.classList.add('visible');
+            progressFill.style.width = '0%';
+            recordBtn.disabled = true;
+            modelSelect.disabled = true;
+
+            try {
+                transcriber = await pipeline('automatic-speech-recognition', modelName, {
+                    progress_callback: (p) => {
+                        if (p.status === 'progress') {
+                            const pct = Math.round((p.loaded / p.total) * 100);
+                            progressFill.style.width = `${pct}%`;
+                            setStatus(`Downloading… ${pct}%`, 'loading');
+                        } else if (p.status === 'done') {
+                            progressFill.style.width = '100%';
+                        }
+                    }
+                });
+                setStatus('Ready — tap Start to listen', 'listening');
+                recordBtn.disabled = false;
+                setTimeout(() => progressBar.classList.remove('visible'), 800);
+            } catch (err) {
+                console.error(err);
+                setStatus('Model load failed: ' + err.message, '');
+                modelSelect.disabled = false;
+            }
+        }
+
+        // ── Transcribe a collected speech segment ─────────────────────────────
+        async function transcribeSegment(chunks) {
+            const totalLen = chunks.reduce((a, c) => a + c.length, 0);
+            const audio = new Float32Array(totalLen);
+            let off = 0;
+            for (const c of chunks) { audio.set(c, off); off += c.length; }
+
+            isPending = true;
+            renderDisplay();
+            isProcessing = true;
+            setStatus('Processing…', 'processing');
+
+            try {
+                const res = await transcriber(audio, {
+                    language: modelSelect.value.includes('.en') ? 'en' : null,
+                    task: 'transcribe'
+                });
+                const text = res.text.trim();
+                isPending = false;
+                if (text) {
+                    results.push(text);
+                    accumulatedText = results.join('\n');
+                    void storageApi.saveLatestText(accumulatedText);
+                }
+                renderDisplay();
+            } catch (err) {
+                console.error(err);
+                isPending = false;
+                results.push('⚠️ ' + err.message);
+                renderDisplay();
+            }
+
+            isProcessing = false;
+            if (isListening) setStatus('Listening…', 'listening');
+        }
+
+        // ── VAD audio handler (called per ScriptProcessor chunk) ──────────────
+        function onAudioChunk(samples) {
+            // rolling pre-roll buffer
+            preRoll.push(samples);
+            if (preRoll.length > PRE_ROLL_CHUNKS) preRoll.shift();
+
+            const level = rms(samples);
+
+            // update volume meter (smoothed)
+            const pct = Math.min(100, level / 0.1 * 100);
+            volFill.style.width = pct + '%';
+            volFill.className = 'vol-fill' + (level > SILENCE_THRESHOLD ? ' active' : '');
+
+            if (!inSpeech) {
+                if (level > SILENCE_THRESHOLD) {
+                    // speech onset — include pre-roll
+                    inSpeech = true;
+                    silenceCount = 0;
+                    speechChunks = [...preRoll];
+                    setStatus('Speaking…', 'speaking');
+                }
+            } else {
+                speechChunks.push(samples);
+
+                if (level < SILENCE_THRESHOLD) {
+                    silenceCount++;
+                    if (silenceCount >= SILENCE_CHUNKS_NEEDED) {
+                        // speech ended
+                        inSpeech = false;
+                        silenceCount = 0;
+                        if (speechChunks.length >= MIN_SPEECH_CHUNKS) {
+                            const seg = speechChunks.slice();
+                            speechChunks = [];
+                            transcribeSegment(seg);
+                        } else {
+                            speechChunks = [];
+                            if (isListening) setStatus('Listening…', 'listening');
+                        }
+                    }
+                } else {
+                    silenceCount = 0;
+                }
+            }
+        }
+
+        // ── Start / stop listening ────────────────────────────────────────────
+        async function startListening() {
+            try {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+                mediaStream = await navigator.mediaDevices.getUserMedia({
+                    audio: { channelCount: 1, sampleRate: SAMPLE_RATE, echoCancellation: true, noiseSuppression: true }
+                });
+
+                const source = audioCtx.createMediaStreamSource(mediaStream);
+                processor = audioCtx.createScriptProcessor(CHUNK_SIZE, 1, 1);
+                processor.onaudioprocess = (e) => {
+                    if (isListening) onAudioChunk(new Float32Array(e.inputBuffer.getChannelData(0)));
+                };
+                source.connect(processor);
+                processor.connect(audioCtx.destination);
+
+                // reset VAD state
+                inSpeech = false; silenceCount = 0; speechChunks = []; preRoll = [];
+                isListening = true;
+
+                setStatus('Listening…', 'listening');
+                recordBtn.textContent = '⏹️ Stop listening';
+                recordBtn.classList.add('active');
+                modelSelect.disabled = true;
+                volWrap.classList.add('visible');
+                sendBtn.classList.add('visible');
+                sendBtn.disabled = false;
+
+            } catch (err) {
+                console.error(err);
+                setStatus('Mic error: ' + err.message, '');
+            }
+        }
+
+        // Flush any buffered speech to transcription
+        function flushBuffer() {
+            const chunks = inSpeech ? speechChunks.slice() : speechChunks.slice();
+            inSpeech = false;
+            silenceCount = 0;
+            speechChunks = [];
+            if (chunks.length >= MIN_SPEECH_CHUNKS) {
+                transcribeSegment(chunks);
+            }
+        }
+
+        function stopListening() {
+            flushBuffer();
+            isListening = false;
+            inSpeech = false;
+
+            if (processor)   { processor.disconnect(); processor = null; }
+            if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+            if (audioCtx)    { audioCtx.close(); audioCtx = null; }
+
+            recordBtn.textContent = '🎙️ Start listening';
+            recordBtn.classList.remove('active');
+            modelSelect.disabled = false;
+            volWrap.classList.remove('visible');
+            volFill.style.width = '0%';
+            sendBtn.classList.remove('visible');
+            sendBtn.disabled = true;
+            setStatus('Ready — tap Start to listen', 'listening');
+        }
+
+        // ── Event listeners ───────────────────────────────────────────────────
+        recordBtn.addEventListener('click', () => {
+            if (isListening) stopListening();
+            else startListening();
+        });
+
+        sendBtn.addEventListener('click', () => {
+            if (speechChunks.length >= MIN_SPEECH_CHUNKS) {
+                flushBuffer();
+            }
+        });
+
+        async function clearAll() {
+            if (accumulatedText) {
+                await Promise.all([
+                    storageApi.saveLatestText(accumulatedText),
+                    storageApi.archiveText(accumulatedText, 'clear'),
+                ]);
+                accumulatedText = '';
+            }
+            results = [];
+            isPending = false;
+            renderDisplay();
+        }
+
+        clearBtn.addEventListener('click', () => void clearAll());
+
+        const savedLink = document.getElementById('savedLink');
+        savedLink.addEventListener('click', async (e) => {
+            e.preventDefault();
+            if (accumulatedText) {
+                await Promise.all([
+                    storageApi.saveLatestText(accumulatedText),
+                    storageApi.archiveText(accumulatedText, 'clear'),
+                ]);
+            }
+            window.location.href = savedLink.href;
+        });
+
+        modelSelect.addEventListener('change', loadModel);
+
+        renderDisplay();
+        loadModel();
+    </script>
+</body>
+</html>
