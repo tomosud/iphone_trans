@@ -375,7 +375,8 @@
             const label = audioSec ? ` (音声 ${audioSec.toFixed(1)}s)` : '';
             const tick = () => {
                 const elapsed = ((Date.now() - procStartTime) / 1000).toFixed(1);
-                statusText.textContent = `⚙️ 処理中… ${elapsed}s${label}`;
+                const queue = transcribeQueue ? ' [+1待機]' : '';
+                statusText.textContent = `⚙️ 処理中… ${elapsed}s${label}${queue}`;
                 statusDot.className = 'status-dot processing';
             };
             tick();
