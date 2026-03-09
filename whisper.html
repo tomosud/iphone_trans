@@ -686,7 +686,55 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
         modelSelect.addEventListener('change', loadModel);
 
         renderDisplay();
-        loadModel();
+
+        // ── Test mode (?test in URL) ──────────────────────────────────────────
+        if (new URLSearchParams(location.search).has('test')) {
+            // Skip real model load; simulate the UI flow instead
+            setStatus('Test mode — ready', 'listening');
+            recordBtn.disabled = false;
+            modelSelect.disabled = true;
+
+            // Inject a "▶ Run test" button next to record
+            const testBtn = document.createElement('button');
+            testBtn.textContent = '▶ Run test';
+            testBtn.style.cssText = 'flex:1;padding:14px;font-size:1rem;border:none;border-radius:var(--radius);cursor:pointer;font-weight:600;background:#8b5cf6;color:#fff;';
+            document.querySelector('.controls').appendChild(testBtn);
+
+            testBtn.addEventListener('click', async () => {
+                testBtn.disabled = true;
+                volWrap.classList.add('visible');
+
+                // Simulate speech detected: ramp volume bar up
+                let v = 0;
+                const rampUp = setInterval(() => {
+                    v = Math.min(v + 5, 75);
+                    volFill.style.width = v + '%';
+                    volFill.className = 'vol-fill active';
+                }, 60);
+
+                startRecTimer();
+
+                await new Promise(r => setTimeout(r, 3500));  // 3.5s "recording"
+                clearInterval(rampUp);
+                volFill.style.width = '0%';
+                volFill.className = 'vol-fill';
+
+                stopRecTimer();
+                const fakeAudioSec = 3.5;
+                startProcTimer(fakeAudioSec);
+
+                await new Promise(r => setTimeout(r, 2500));  // 2.5s "processing"
+
+                stopProcTimer();
+                results.push('（テスト）これはテスト用の文字起こし結果です。');
+                renderDisplay();
+                setStatus('Test mode — ready', 'listening');
+                volWrap.classList.remove('visible');
+                testBtn.disabled = false;
+            });
+        } else {
+            loadModel();
+        }
     </script>
 </body>
 </html>
