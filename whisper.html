@@ -286,6 +286,7 @@
         const placeholderText = 'Results will appear here as you speak…';
         let results         = [];
         let isPending       = false;
+        let transcribeQueue = null;  // at most 1 pending segment (newest wins)
         let accumulatedText = '';
         let transcriber     = null;
         let audioCtx        = null;
@@ -374,7 +375,8 @@
             const label = audioSec ? ` (音声 ${audioSec.toFixed(1)}s)` : '';
             const tick = () => {
                 const elapsed = ((Date.now() - procStartTime) / 1000).toFixed(1);
-                statusText.textContent = `⚙️ 処理中… ${elapsed}s${label}`;
+                const queue = transcribeQueue ? ' [+1待機]' : '';
+                statusText.textContent = `⚙️ 処理中… ${elapsed}s${label}${queue}`;
                 statusDot.className = 'status-dot processing';
             };
             tick();
@@ -386,15 +388,18 @@
             procDisplayTimer = null;
         }
 
+        const MAX_DISPLAY = 5;  // show last N results; older ones are still saved
+
         function renderDisplay() {
             if (results.length === 0 && !isPending) {
                 finalText.textContent = placeholderText;
             } else {
-                const parts = [...results].reverse();
-                if (isPending) parts.unshift('…');
+                const visible = results.slice(-MAX_DISPLAY);
+                const parts = [...visible];
+                if (isPending) parts.push('…');
                 finalText.textContent = parts.join('\n\n');
             }
-            finalText.scrollTop = 0;
+            finalText.scrollTop = finalText.scrollHeight;
         }
 
         // ── Model loading ─────────────────────────────────────────────────────
@@ -429,9 +434,18 @@
         }
 
         // ── Transcribe a collected speech segment ─────────────────────────────
-        async function transcribeSegment(chunks) {
+        // If already processing, queue the segment (newest wins — older queued one is dropped).
+        // After finishing, auto-drain the queue once.
+        function transcribeSegment(chunks) {
             if (!transcriber || chunks.length < MIN_SPEECH_CHUNKS) return;
+            if (isProcessing) {
+                transcribeQueue = chunks;   // replace any previously queued segment
+                return;
+            }
+            _runTranscribe(chunks);
+        }
 
+        async function _runTranscribe(chunks) {
             const totalLen = chunks.reduce((a, c) => a + c.length, 0);
             const audio = new Float32Array(totalLen);
             let off = 0;
@@ -467,7 +481,15 @@
 
             stopProcTimer();
             isProcessing = false;
-            if (isListening) setStatus('Listening…', 'listening');
+
+            // Drain queue: process the segment that arrived while we were busy
+            if (transcribeQueue) {
+                const next = transcribeQueue;
+                transcribeQueue = null;
+                _runTranscribe(next);
+            } else if (isListening) {
+                setStatus('Listening…', 'listening');
+            }
         }
 
         // ── VAD: called with one chunk of 16kHz mono samples ─────────────────

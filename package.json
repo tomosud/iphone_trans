@@ -9,5 +9,8 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "@xenova/transformers": "^2.17.2"
   }
 }
