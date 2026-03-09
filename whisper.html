@@ -135,7 +135,7 @@
         .vad-config span { font-size: 0.8rem; color: var(--fg); }
 
         /* Controls */
-        .controls { display: flex; gap: 12px; }
+        .controls { display: flex; gap: 8px; flex: 1; }
         .btn-record {
             flex: 1; padding: 14px; font-size: 1rem;
             border: none; border-radius: var(--radius);
@@ -156,61 +156,6 @@
         .btn-send:not(:disabled):hover { background: #2563eb; }
         .btn-send:disabled { opacity: 0.4; cursor: not-allowed; }
         .btn-send.visible { display: block; }
-
-        /* Results */
-        .result-list {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-            min-height: 120px;
-        }
-
-        .result-entry {
-            padding: 12px 14px;
-            background: var(--panel);
-            border: 1px solid var(--panel-border);
-            border-radius: var(--radius);
-            font-size: 1rem;
-            line-height: 1.6;
-            word-wrap: break-word;
-            color: var(--fg);
-            animation: fadeIn 0.2s ease;
-        }
-        .result-entry.pending {
-            color: var(--muted);
-            border-style: dashed;
-            font-style: italic;
-        }
-
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(4px); }
-            to   { opacity: 1; transform: translateY(0); }
-        }
-
-        .result-empty {
-            color: var(--muted);
-            font-size: 0.95rem;
-            text-align: center;
-            padding: 24px 0;
-        }
-
-        .clear-results {
-            font-size: 0.8rem;
-            color: var(--muted);
-            background: none;
-            border: none;
-            cursor: pointer;
-            text-decoration: underline;
-            padding: 0;
-            align-self: flex-end;
-        }
-        .clear-results:hover { color: var(--fg); }
-
-        .info-text {
-            font-size: 0.8rem;
-            color: var(--muted);
-            text-align: center;
-        }
     </style>
 </head>
 <body>
@@ -261,26 +206,23 @@
             </details>
         </div>
 
-        <!-- Middle: controls + results -->
-        <div style="display:flex;flex-direction:column;gap:12px;">
-            <div class="controls">
-                <button class="btn-record" id="recordBtn" disabled>🎙️ Start listening</button>
-                <button class="btn-send" id="sendBtn" disabled>送信</button>
-            </div>
+        <!-- Middle: controls + display -->
+        <div style="display:flex;flex-direction:column;gap:var(--gap);">
+            <section class="input-panel">
+                <div class="input-row">
+                    <div class="controls">
+                        <button class="btn-record" id="recordBtn" disabled>🎙️ Start listening</button>
+                        <button class="btn-send" id="sendBtn" disabled>送信</button>
+                    </div>
+                    <button id="clearBtn" class="clear-button" type="button">Clear</button>
+                </div>
+            </section>
 
-            <div style="display:flex;justify-content:space-between;align-items:center;">
-                <span style="font-size:0.85rem;color:var(--muted);">Results</span>
-                <button class="clear-results" id="clearBtn">Clear</button>
-            </div>
-
-            <div class="result-list" id="resultList">
-                <p class="result-empty" id="emptyMsg">Results will appear here as you speak…</p>
-            </div>
-
-            <p class="info-text">
-                First load downloads model (~75–142 MB) and caches it.<br>
-                Mic &amp; audio never leave your device.
-            </p>
+            <section class="display-panel">
+                <div class="display-box">
+                    <div id="finalText" class="final-text" translate="yes"></div>
+                </div>
+            </section>
         </div>
 
         <!-- Nav -->
@@ -313,8 +255,7 @@
         const progressBar  = document.getElementById('progressBar');
         const progressFill = document.getElementById('progressFill');
         const recordBtn    = document.getElementById('recordBtn');
-        const resultList   = document.getElementById('resultList');
-        const emptyMsg     = document.getElementById('emptyMsg');
+        const finalText    = document.getElementById('finalText');
         const clearBtn     = document.getElementById('clearBtn');
         const sendBtn      = document.getElementById('sendBtn');
         const volWrap      = document.getElementById('volWrap');
@@ -346,7 +287,10 @@
         });
 
         // ── State ─────────────────────────────────────────────────────────────
-        let accumulatedText = '';  // all transcribed results joined, for storage
+        const placeholderText = 'Results will appear here as you speak…';
+        let results       = [];   // transcribed segments, oldest first
+        let isPending     = false;
+        let accumulatedText = '';
         let transcriber   = null;
         let audioCtx      = null;
         let mediaStream   = null;
@@ -400,14 +344,15 @@
             startSubCycle(state);
         }
 
-        function addResult(text, pending = false) {
-            emptyMsg.style.display = 'none';
-            const el = document.createElement('div');
-            el.className = 'result-entry' + (pending ? ' pending' : '');
-            el.textContent = text;
-            resultList.appendChild(el);
-            el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-            return el;
+        function renderDisplay() {
+            if (results.length === 0 && !isPending) {
+                finalText.textContent = placeholderText;
+            } else {
+                const parts = [...results].reverse();
+                if (isPending) parts.unshift('…');
+                finalText.textContent = parts.join('\n\n');
+            }
+            finalText.scrollTop = 0;
         }
 
         // ── Model loading ─────────────────────────────────────────────────────
@@ -448,7 +393,8 @@
             let off = 0;
             for (const c of chunks) { audio.set(c, off); off += c.length; }
 
-            const placeholder = addResult('Transcribing…', true);
+            isPending = true;
+            renderDisplay();
             isProcessing = true;
             setStatus('Processing…', 'processing');
 
@@ -458,16 +404,18 @@
                     task: 'transcribe'
                 });
                 const text = res.text.trim();
-                placeholder.className = 'result-entry';
-                placeholder.textContent = text || '(no result)';
+                isPending = false;
                 if (text) {
-                    accumulatedText = accumulatedText ? accumulatedText + '\n' + text : text;
+                    results.push(text);
+                    accumulatedText = results.join('\n');
                     void storageApi.saveLatestText(accumulatedText);
                 }
+                renderDisplay();
             } catch (err) {
                 console.error(err);
-                placeholder.className = 'result-entry';
-                placeholder.textContent = '⚠️ ' + err.message;
+                isPending = false;
+                results.push('⚠️ ' + err.message);
+                renderDisplay();
             }
 
             isProcessing = false;
@@ -603,8 +551,9 @@
                 ]);
                 accumulatedText = '';
             }
-            resultList.querySelectorAll('.result-entry').forEach(el => el.remove());
-            emptyMsg.style.display = '';
+            results = [];
+            isPending = false;
+            renderDisplay();
         }
 
         clearBtn.addEventListener('click', () => void clearAll());
@@ -623,6 +572,7 @@
 
         modelSelect.addEventListener('change', loadModel);
 
+        renderDisplay();
         loadModel();
     </script>
 </body>
