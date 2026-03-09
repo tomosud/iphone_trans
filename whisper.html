@@ -187,11 +187,11 @@
                 <summary style="cursor:pointer;color:var(--muted);user-select:none;">VAD settings</summary>
                 <div class="vad-config" style="margin-top:8px;">
                     <div>
-                        <label>Silence threshold <span id="threshVal">0.010</span></label>
+                        <label>最低閾値 <span id="threshVal">0.010</span>（自動適応）</label>
                         <input type="range" id="threshSlider" min="1" max="50" value="10">
                     </div>
                     <div>
-                        <label>Silence duration <span id="silenceVal">1.5</span>s</label>
+                        <label>無音カットoff <span id="silenceVal">1.5</span>s</label>
                         <input type="range" id="silenceSlider" min="5" max="40" value="15">
                     </div>
                 </div>
@@ -258,18 +258,24 @@
         const silenceVal    = document.getElementById('silenceVal');
 
         // ── VAD parameters ────────────────────────────────────────────────────
-        const SAMPLE_RATE      = 16000;
-        const CHUNK_SIZE       = 4096;          // samples per worklet callback
-        const CHUNK_MS         = CHUNK_SIZE / SAMPLE_RATE * 1000; // ~256 ms
-        const PRE_ROLL_CHUNKS  = 3;             // ~768 ms pre-roll
-        const MIN_SPEECH_CHUNKS = 2;            // ignore clips shorter than ~512 ms
+        const SAMPLE_RATE       = 16000;
+        const CHUNK_SIZE        = 4096;          // samples per worklet callback
+        const CHUNK_MS          = CHUNK_SIZE / SAMPLE_RATE * 1000; // ~256 ms
+        const PRE_ROLL_CHUNKS   = 4;             // ~1s pre-roll
+        const MIN_SPEECH_CHUNKS = 2;             // ignore clips shorter than ~512 ms
+        const MAX_SPEECH_CHUNKS = Math.round(25 * SAMPLE_RATE / CHUNK_SIZE); // 25s auto-flush
 
-        let SILENCE_THRESHOLD    = 0.010;
-        let SILENCE_CHUNKS_NEEDED = 6;          // ~1.5 s silence to end segment
+        // Adaptive VAD: noise floor tracks background RMS; onset/offset use multipliers
+        const NOISE_ALPHA   = 0.004;   // noise floor adaptation speed (~250 chunks to adapt)
+        const ONSET_MULT    = 4.0;     // onset  threshold = noiseFloor × ONSET_MULT
+        const OFFSET_MULT   = 2.2;     // offset threshold = noiseFloor × OFFSET_MULT
+
+        let MANUAL_FLOOR      = 0.010; // hard minimum floor (from slider)
+        let SILENCE_CHUNKS_NEEDED = 6; // ~1.5 s silence to end segment
 
         threshSlider.addEventListener('input', () => {
-            SILENCE_THRESHOLD = threshSlider.value / 1000;
-            threshVal.textContent = SILENCE_THRESHOLD.toFixed(3);
+            MANUAL_FLOOR = threshSlider.value / 1000;
+            threshVal.textContent = MANUAL_FLOOR.toFixed(3);
         });
         silenceSlider.addEventListener('input', () => {
             SILENCE_CHUNKS_NEEDED = parseInt(silenceSlider.value);
@@ -295,6 +301,7 @@
         let speechBuf    = [];   // Float32Arrays of current speech
         let preRoll      = [];   // ring-buffer before speech onset
         let smoothedRms  = 0;
+        let noiseFloor   = 0.010; // adaptive background noise estimate
 
         // Timer state
         let speechStartTime  = 0;
@@ -346,23 +353,17 @@
             startSubCycle(state);
         }
 
-        // Live recording timer: updates statusText with elapsed seconds
+        // Recording timer: speechStartTime is set at onset;
+        // onAudioChunk updates the display every chunk (~256ms) — no setInterval needed.
         function startRecTimer() {
-            clearInterval(recDisplayTimer);
             speechStartTime = Date.now();
             stopSubCycle();
-            const tick = () => {
-                const elapsed = ((Date.now() - speechStartTime) / 1000).toFixed(1);
-                statusText.textContent = `🔴 録音中 ${elapsed}s`;
-                statusDot.className = 'status-dot speaking';
-            };
-            tick();
-            recDisplayTimer = setInterval(tick, 100);
+            statusText.textContent = '🔴 録音中 0.0s';
+            statusDot.className = 'status-dot speaking';
         }
 
         function stopRecTimer() {
-            clearInterval(recDisplayTimer);
-            recDisplayTimer = null;
+            // nothing to clear — display updates are driven by onAudioChunk
         }
 
         // Processing timer: updates statusText with elapsed seconds
@@ -476,15 +477,22 @@
             if (preRoll.length > PRE_ROLL_CHUNKS) preRoll.shift();
 
             const level = rms(samples);
-            // smooth level for display only
             smoothedRms = smoothedRms * 0.7 + level * 0.3;
             const pct = Math.min(100, smoothedRms / 0.08 * 100);
             volFill.style.width = pct + '%';
-            volFill.className = 'vol-fill' + (level > SILENCE_THRESHOLD ? ' active' : '');
+
+            // Adaptive noise floor: update slowly while not speaking
+            if (!inSpeech) {
+                noiseFloor = noiseFloor * (1 - NOISE_ALPHA) + level * NOISE_ALPHA;
+                noiseFloor = Math.max(noiseFloor, MANUAL_FLOOR * 0.3);
+            }
+
+            const onsetThresh  = Math.max(MANUAL_FLOOR, noiseFloor * ONSET_MULT);
+            const offsetThresh = Math.max(MANUAL_FLOOR * 0.6, noiseFloor * OFFSET_MULT);
+            volFill.className = 'vol-fill' + (level > onsetThresh ? ' active' : '');
 
             if (!inSpeech) {
-                if (level > SILENCE_THRESHOLD) {
-                    // speech onset
+                if (level > onsetThresh) {
                     inSpeech = true;
                     silenceCount = 0;
                     speechBuf = [...preRoll];
@@ -493,13 +501,27 @@
             } else {
                 speechBuf.push(samples.slice());
 
-                if (level < SILENCE_THRESHOLD) {
+                // Auto-flush before hitting Whisper's 30s context limit
+                if (speechBuf.length >= MAX_SPEECH_CHUNKS) {
+                    endSpeechSegment();
+                    return;
+                }
+
+                const elapsed = ((Date.now() - speechStartTime) / 1000).toFixed(1);
+                if (level < offsetThresh) {
                     silenceCount++;
+                    // Show silence countdown so user knows when cut will happen
+                    const silSec  = (silenceCount * CHUNK_MS / 1000).toFixed(1);
+                    const limSec  = (SILENCE_CHUNKS_NEEDED * CHUNK_MS / 1000).toFixed(1);
+                    statusText.textContent = `🔴 ${elapsed}s | 無音 ${silSec}/${limSec}s`;
+                    statusDot.className = 'status-dot speaking';
                     if (silenceCount >= SILENCE_CHUNKS_NEEDED) {
                         endSpeechSegment();
                     }
                 } else {
                     silenceCount = 0;
+                    statusText.textContent = `🔴 録音中 ${elapsed}s`;
+                    statusDot.className = 'status-dot speaking';
                 }
             }
         }
@@ -509,8 +531,15 @@
             inSpeech = false;
             silenceCount = 0;
             stopRecTimer();
-            const seg = speechBuf.slice();
+            let seg = speechBuf.slice();
             speechBuf = [];
+
+            // Trim trailing silence so Whisper receives clean audio
+            const trimThresh = Math.max(MANUAL_FLOOR * 0.6, noiseFloor * OFFSET_MULT);
+            while (seg.length > MIN_SPEECH_CHUNKS && rms(seg[seg.length - 1]) < trimThresh) {
+                seg.pop();
+            }
+
             if (seg.length >= MIN_SPEECH_CHUNKS) {
                 transcribeSegment(seg);
             } else if (isListening) {
@@ -595,7 +624,8 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                 }
 
                 // Reset VAD state
-                inSpeech = false; silenceCount = 0; speechBuf = []; preRoll = []; smoothedRms = 0;
+                inSpeech = false; silenceCount = 0; speechBuf = []; preRoll = [];
+                smoothedRms = 0; noiseFloor = MANUAL_FLOOR;
                 isListening = true;
 
                 setStatus('Listening…', 'listening');
@@ -686,7 +716,55 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
         modelSelect.addEventListener('change', loadModel);
 
         renderDisplay();
-        loadModel();
+
+        // ── Test mode (?test in URL) ──────────────────────────────────────────
+        if (new URLSearchParams(location.search).has('test')) {
+            // Skip real model load; simulate the UI flow instead
+            setStatus('Test mode — ready', 'listening');
+            recordBtn.disabled = false;
+            modelSelect.disabled = true;
+
+            // Inject a "▶ Run test" button next to record
+            const testBtn = document.createElement('button');
+            testBtn.textContent = '▶ Run test';
+            testBtn.style.cssText = 'flex:1;padding:14px;font-size:1rem;border:none;border-radius:var(--radius);cursor:pointer;font-weight:600;background:#8b5cf6;color:#fff;';
+            document.querySelector('.controls').appendChild(testBtn);
+
+            testBtn.addEventListener('click', async () => {
+                testBtn.disabled = true;
+                volWrap.classList.add('visible');
+
+                // Simulate speech detected: ramp volume bar up
+                let v = 0;
+                const rampUp = setInterval(() => {
+                    v = Math.min(v + 5, 75);
+                    volFill.style.width = v + '%';
+                    volFill.className = 'vol-fill active';
+                }, 60);
+
+                startRecTimer();
+
+                await new Promise(r => setTimeout(r, 3500));  // 3.5s "recording"
+                clearInterval(rampUp);
+                volFill.style.width = '0%';
+                volFill.className = 'vol-fill';
+
+                stopRecTimer();
+                const fakeAudioSec = 3.5;
+                startProcTimer(fakeAudioSec);
+
+                await new Promise(r => setTimeout(r, 2500));  // 2.5s "processing"
+
+                stopProcTimer();
+                results.push('（テスト）これはテスト用の文字起こし結果です。');
+                renderDisplay();
+                setStatus('Test mode — ready', 'listening');
+                volWrap.classList.remove('visible');
+                testBtn.disabled = false;
+            });
+        } else {
+            loadModel();
+        }
     </script>
 </body>
 </html>
