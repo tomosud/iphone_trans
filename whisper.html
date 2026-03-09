@@ -51,6 +51,19 @@
             box-shadow: var(--shadow);
         }
 
+        .status-sub {
+            font-size: 0.75rem;
+            color: var(--muted);
+            min-height: 1.2em;
+            text-align: right;
+            opacity: 0;
+            transition: opacity 0.4s ease;
+            letter-spacing: 0.01em;
+        }
+        .status-sub.visible {
+            opacity: 1;
+        }
+
         .status-dot {
             width: 10px;
             height: 10px;
@@ -207,7 +220,10 @@
 
             <div class="status-bar">
                 <div class="status-dot" id="statusDot"></div>
-                <div id="statusText" style="flex:1;font-size:0.9rem;">Loading model…</div>
+                <div style="flex:1;">
+                    <div id="statusText" style="font-size:0.9rem;">Loading model…</div>
+                    <div class="status-sub" id="statusSub"></div>
+                </div>
             </div>
 
             <div class="progress-bar" id="progressBar">
@@ -274,6 +290,7 @@
 
         // ── DOM refs ──────────────────────────────────────────────────────────
         const modelSelect  = document.getElementById('modelSelect');
+        const statusSub    = document.getElementById('statusSub');
         const statusDot    = document.getElementById('statusDot');
         const statusText   = document.getElementById('statusText');
         const progressBar  = document.getElementById('progressBar');
@@ -331,9 +348,37 @@
             return Math.sqrt(sum / buf.length);
         }
 
+        // Sub-status cycling messages per state
+        const SUB_MESSAGES = {
+            listening:  ['音声を待機中…', '話しかけてください', 'マイク稼働中'],
+            speaking:   ['録音中…', '音声を取り込んでいます', '発話を検出しました'],
+            processing: ['Whisper 処理中…', '音声を解析しています', 'もう少しお待ちください'],
+            loading:    ['モデルをロード中…', 'しばらくお待ちください', 'キャッシュを確認中…'],
+        };
+        let _subTimer = null;
+        let _subIdx   = 0;
+
+        function startSubCycle(state) {
+            clearInterval(_subTimer);
+            const msgs = SUB_MESSAGES[state];
+            if (!msgs) { statusSub.textContent = ''; statusSub.classList.remove('visible'); return; }
+            _subIdx = 0;
+            const show = () => {
+                statusSub.classList.remove('visible');
+                setTimeout(() => {
+                    statusSub.textContent = msgs[_subIdx % msgs.length];
+                    statusSub.classList.add('visible');
+                    _subIdx++;
+                }, 80);
+            };
+            show();
+            _subTimer = setInterval(show, 3000);
+        }
+
         function setStatus(text, state = '') {
             statusText.textContent = text;
             statusDot.className = 'status-dot' + (state ? ' ' + state : '');
+            startSubCycle(state);
         }
 
         function addResult(text, pending = false) {
