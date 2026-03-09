@@ -159,17 +159,17 @@
             <div class="model-select">
                 <label for="modelSelect">Model:</label>
                 <select id="modelSelect">
-                    <option value="Xenova/whisper-tiny">whisper-tiny (multilingual · ~75MB)</option>
-                    <option value="Xenova/whisper-base">whisper-base (multilingual · ~142MB)</option>
                     <option value="Xenova/whisper-tiny.en">whisper-tiny.en (EN only · fastest · ~75MB)</option>
                     <option value="Xenova/whisper-base.en">whisper-base.en (EN only · ~142MB)</option>
+                    <option value="Xenova/whisper-tiny">whisper-tiny (multilingual · ~75MB)</option>
+                    <option value="Xenova/whisper-base">whisper-base (multilingual · ~142MB)</option>
                 </select>
             </div>
             <div class="model-select" style="margin-top:6px;">
                 <label for="langSelect">Language:</label>
                 <select id="langSelect">
-                    <option value="ja">日本語</option>
                     <option value="en">English</option>
+                    <option value="ja">日本語</option>
                     <option value="">Auto detect</option>
                 </select>
             </div>
@@ -310,14 +310,20 @@
             localStorage.setItem('vad_thresh',  threshSlider.value);
             localStorage.setItem('vad_silence', silenceSlider.value);
             localStorage.setItem('whisper_lang', langSelect.value);
+            localStorage.setItem('whisper_model', modelSelect.value);
         }
         function loadVadSettings() {
             const t = localStorage.getItem('vad_thresh');
             const s = localStorage.getItem('vad_silence');
             const l = localStorage.getItem('whisper_lang');
+            const m = localStorage.getItem('whisper_model');
             if (t) { threshSlider.value = t; }
             if (s) { silenceSlider.value = s; }
             if (l !== null) { langSelect.value = l; }
+            else { langSelect.value = 'en'; }
+            if (m && [...modelSelect.options].some(o => o.value === m)) {
+                modelSelect.value = m;
+            }
             // apply loaded values
             MANUAL_FLOOR          = threshSlider.value / 1000;
             SILENCE_CHUNKS_NEEDED = parseInt(silenceSlider.value);
@@ -338,6 +344,7 @@
         });
 
         langSelect.addEventListener('change', saveVadSettings);
+        modelSelect.addEventListener('change', saveVadSettings);
 
         // ── Debug log ─────────────────────────────────────────────────────────
         let _logLines   = [];
@@ -380,8 +387,8 @@
         const placeholderText = 'Results will appear here as you speak…';
         let results         = [];
         let isPending       = false;
-        let transcribeQueue = null;  // at most 1 pending segment (newest wins)
-        let transcribeQueueSec = 0;  // audio duration of queued segment
+        let transcribeQueue = [];    // pending segments (FIFO)
+        let transcribeQueueSec = 0;  // total audio duration queued
         let accumulatedText = '';
         let transcriber     = null;
         let audioCtx        = null;
@@ -479,8 +486,8 @@
             const parts = [];
             if (isProcessing) {
                 const procElapsed = ((Date.now() - procStartTime) / 1000).toFixed(1);
-                const queueInfo = transcribeQueue
-                    ? ` | 待機: 音声${transcribeQueueSec.toFixed(1)}s`
+                const queueInfo = transcribeQueue.length > 0
+                    ? ` | 待機: ${transcribeQueue.length}件 / 音声${transcribeQueueSec.toFixed(1)}s`
                     : '';
                 parts.push(`⚙️ 処理中 ${procElapsed}s${_procAudioLabel}${queueInfo}`);
             }
@@ -568,20 +575,14 @@
         }
 
         // ── Transcribe a collected speech segment ─────────────────────────────
-        // If already processing, queue the segment (newest wins — older queued one is dropped).
-        // After finishing, auto-drain the queue once.
+        // If already processing, queue the segment and process all segments in order.
         function transcribeSegment(chunks) {
             if (!transcriber || chunks.length < MIN_SPEECH_CHUNKS) return;
+            const sec = chunks.reduce((a, c) => a + c.length, 0) / SAMPLE_RATE;
             if (isProcessing) {
-                const sec = chunks.reduce((a, c) => a + c.length, 0) / SAMPLE_RATE;
-                if (transcribeQueue) {
-                    const oldSec = transcribeQueueSec.toFixed(1);
-                    addLog(`⏭ キュー上書き: 旧 ${oldSec}s → 新 ${sec.toFixed(1)}s (処理中につき)`);
-                } else {
-                    addLog(`📥 キュー追加: 音声 ${sec.toFixed(1)}s (処理中につき待機)`);
-                }
-                transcribeQueue    = chunks;
-                transcribeQueueSec = sec;
+                transcribeQueue.push(chunks);
+                transcribeQueueSec += sec;
+                addLog(`📥 キュー追加: 音声 ${sec.toFixed(1)}s (待機 ${transcribeQueue.length}件 / 合計${transcribeQueueSec.toFixed(1)}s)`);
                 return;
             }
             _runTranscribe(chunks);
@@ -633,13 +634,12 @@
             stopProcTimer();
             isProcessing = false;
 
-            // Drain queue: process the segment that arrived while we were busy
-            if (transcribeQueue) {
-                const next = transcribeQueue;
-                const qSec = transcribeQueueSec;
-                transcribeQueue    = null;
-                transcribeQueueSec = 0;
-                addLog(`▶️ キュードレイン: 音声 ${qSec.toFixed(1)}s を処理開始`);
+            // Drain queue: process all queued segments in FIFO order
+            if (transcribeQueue.length > 0) {
+                const next = transcribeQueue.shift();
+                const qSec = next.reduce((a, c) => a + c.length, 0) / SAMPLE_RATE;
+                transcribeQueueSec = Math.max(0, transcribeQueueSec - qSec);
+                addLog(`▶️ キュードレイン: 音声 ${qSec.toFixed(1)}s を処理開始 (残り ${transcribeQueue.length}件 / ${transcribeQueueSec.toFixed(1)}s)`);
                 _runTranscribe(next);
             } else if (isListening) {
                 setStatus('Listening…', 'listening');
