@@ -296,6 +296,12 @@
         let preRoll      = [];   // ring-buffer before speech onset
         let smoothedRms  = 0;
 
+        // Timer state
+        let speechStartTime  = 0;
+        let procStartTime    = 0;
+        let recDisplayTimer  = null;
+        let procDisplayTimer = null;
+
         // ── Helpers ───────────────────────────────────────────────────────────
         function rms(buf) {
             let sum = 0;
@@ -304,18 +310,23 @@
         }
 
         const SUB_MESSAGES = {
-            listening:  ['音声を待機中…', '話しかけてください', 'マイク稼働中'],
-            speaking:   ['録音中…', '音声を取り込んでいます', '発話を検出しました'],
-            processing: ['Whisper 処理中…', '音声を解析しています', 'もう少しお待ちください'],
-            loading:    ['モデルをロード中…', 'しばらくお待ちください', 'キャッシュを確認中…'],
+            listening: ['音声を待機中…', '話しかけてください', 'マイク稼働中'],
+            loading:   ['モデルをロード中…', 'しばらくお待ちください', 'キャッシュを確認中…'],
         };
         let _subTimer = null;
         let _subIdx   = 0;
 
-        function startSubCycle(state) {
+        function stopSubCycle() {
             clearInterval(_subTimer);
+            _subTimer = null;
+            statusSub.textContent = '';
+            statusSub.classList.remove('visible');
+        }
+
+        function startSubCycle(state) {
+            stopSubCycle();
             const msgs = SUB_MESSAGES[state];
-            if (!msgs) { statusSub.textContent = ''; statusSub.classList.remove('visible'); return; }
+            if (!msgs) return;
             _subIdx = 0;
             const show = () => {
                 statusSub.classList.remove('visible');
@@ -333,6 +344,45 @@
             statusText.textContent = text;
             statusDot.className = 'status-dot' + (state ? ' ' + state : '');
             startSubCycle(state);
+        }
+
+        // Live recording timer: updates statusText with elapsed seconds
+        function startRecTimer() {
+            clearInterval(recDisplayTimer);
+            speechStartTime = Date.now();
+            stopSubCycle();
+            const tick = () => {
+                const elapsed = ((Date.now() - speechStartTime) / 1000).toFixed(1);
+                statusText.textContent = `🔴 録音中 ${elapsed}s`;
+                statusDot.className = 'status-dot speaking';
+            };
+            tick();
+            recDisplayTimer = setInterval(tick, 100);
+        }
+
+        function stopRecTimer() {
+            clearInterval(recDisplayTimer);
+            recDisplayTimer = null;
+        }
+
+        // Processing timer: updates statusText with elapsed seconds
+        function startProcTimer(audioSec) {
+            clearInterval(procDisplayTimer);
+            procStartTime = Date.now();
+            stopSubCycle();
+            const label = audioSec ? ` (音声 ${audioSec.toFixed(1)}s)` : '';
+            const tick = () => {
+                const elapsed = ((Date.now() - procStartTime) / 1000).toFixed(1);
+                statusText.textContent = `⚙️ 処理中… ${elapsed}s${label}`;
+                statusDot.className = 'status-dot processing';
+            };
+            tick();
+            procDisplayTimer = setInterval(tick, 200);
+        }
+
+        function stopProcTimer() {
+            clearInterval(procDisplayTimer);
+            procDisplayTimer = null;
         }
 
         function renderDisplay() {
@@ -386,10 +436,12 @@
             let off = 0;
             for (const c of chunks) { audio.set(c, off); off += c.length; }
 
+            const audioSec = totalLen / SAMPLE_RATE;
             isPending = true;
             isProcessing = true;
             renderDisplay();
-            setStatus('Processing…', 'processing');
+            stopRecTimer();
+            startProcTimer(audioSec);
 
             try {
                 const isEnOnly = modelSelect.value.includes('.en');
@@ -412,6 +464,7 @@
                 renderDisplay();
             }
 
+            stopProcTimer();
             isProcessing = false;
             if (isListening) setStatus('Listening…', 'listening');
         }
@@ -435,7 +488,7 @@
                     inSpeech = true;
                     silenceCount = 0;
                     speechBuf = [...preRoll];
-                    setStatus('Speaking…', 'speaking');
+                    startRecTimer();
                 }
             } else {
                 speechBuf.push(samples.slice());
@@ -455,6 +508,7 @@
             if (!inSpeech) return;
             inSpeech = false;
             silenceCount = 0;
+            stopRecTimer();
             const seg = speechBuf.slice();
             speechBuf = [];
             if (seg.length >= MIN_SPEECH_CHUNKS) {
@@ -575,6 +629,7 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
         function stopListening() {
             flushBuffer();
             isListening = false;
+            stopRecTimer();
 
             if (workletNode) { workletNode.disconnect(); workletNode = null; }
             if (scriptNode)  { scriptNode.disconnect(); scriptNode = null; }
