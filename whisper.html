@@ -231,6 +231,21 @@
 
     </div>
 
+    <!-- Debug log panel -->
+    <div style="max-width:900px;margin:12px auto 0;padding:0 var(--gap);">
+        <details id="logDetails" style="font-size:0.82rem;">
+            <summary style="cursor:pointer;color:var(--muted);user-select:none;padding:4px 0;">
+                🪵 デバッグログ <span id="logBadge" style="background:var(--accent);color:#fff;border-radius:8px;padding:1px 7px;font-size:0.75rem;margin-left:6px;display:none;"></span>
+            </summary>
+            <div style="margin-top:6px;display:flex;gap:8px;align-items:center;">
+                <button id="logCopyBtn" style="font-size:0.8rem;padding:3px 10px;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;color:var(--fg);">📋 コピー</button>
+                <button id="logClearBtn" style="font-size:0.8rem;padding:3px 10px;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;color:var(--muted);">クリア</button>
+                <span id="logCopyMsg" style="font-size:0.75rem;color:var(--accent);display:none;">コピーしました</span>
+            </div>
+            <pre id="logArea" style="margin-top:6px;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px;font-size:0.75rem;font-family:monospace;white-space:pre-wrap;word-break:break-all;max-height:260px;overflow-y:auto;color:var(--fg);line-height:1.5;"></pre>
+        </details>
+    </div>
+
     <script src="storage.js"></script>
     <script type="module">
         import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
@@ -258,6 +273,12 @@
         const silenceSlider = document.getElementById('silenceSlider');
         const silenceVal    = document.getElementById('silenceVal');
         const vadDebug      = document.getElementById('vadDebug');
+        const logArea       = document.getElementById('logArea');
+        const logBadge      = document.getElementById('logBadge');
+        const logCopyBtn    = document.getElementById('logCopyBtn');
+        const logClearBtn   = document.getElementById('logClearBtn');
+        const logCopyMsg    = document.getElementById('logCopyMsg');
+        const logDetails    = document.getElementById('logDetails');
 
         // ── VAD parameters ────────────────────────────────────────────────────
         const SAMPLE_RATE       = 16000;
@@ -304,11 +325,49 @@
             saveVadSettings();
         });
 
+        // ── Debug log ─────────────────────────────────────────────────────────
+        let _logLines   = [];
+        let _logStart   = Date.now();
+        let _logBadgeN  = 0;
+
+        function addLog(msg) {
+            const t = ((Date.now() - _logStart) / 1000).toFixed(2);
+            const ts = t.padStart(7, ' ');
+            _logLines.push(`[${ts}s] ${msg}`);
+            if (_logLines.length > 300) _logLines.shift();
+            logArea.textContent = _logLines.join('\n');
+            logArea.scrollTop = logArea.scrollHeight;
+            // badge: show unread count when panel is closed
+            if (!logDetails.open) {
+                _logBadgeN++;
+                logBadge.textContent = _logBadgeN > 99 ? '99+' : _logBadgeN;
+                logBadge.style.display = 'inline';
+            }
+        }
+
+        logDetails.addEventListener('toggle', () => {
+            if (logDetails.open) { _logBadgeN = 0; logBadge.style.display = 'none'; }
+        });
+
+        logCopyBtn.addEventListener('click', () => {
+            navigator.clipboard.writeText(_logLines.join('\n')).then(() => {
+                logCopyMsg.style.display = 'inline';
+                setTimeout(() => { logCopyMsg.style.display = 'none'; }, 2000);
+            });
+        });
+
+        logClearBtn.addEventListener('click', () => {
+            _logLines = [];
+            _logStart = Date.now();
+            logArea.textContent = '';
+        });
+
         // ── State ─────────────────────────────────────────────────────────────
         const placeholderText = 'Results will appear here as you speak…';
         let results         = [];
         let isPending       = false;
         let transcribeQueue = null;  // at most 1 pending segment (newest wins)
+        let transcribeQueueSec = 0;  // audio duration of queued segment
         let accumulatedText = '';
         let transcriber     = null;
         let audioCtx        = null;
@@ -331,6 +390,9 @@
         let procStartTime    = 0;
         let recDisplayTimer  = null;
         let procDisplayTimer = null;
+
+        // For periodic "why not detecting" log
+        let _lastNonDetectLog = 0;
 
         // ── Helpers ───────────────────────────────────────────────────────────
         function rms(buf) {
@@ -385,15 +447,17 @@
             const parts = [];
             if (isProcessing) {
                 const procElapsed = ((Date.now() - procStartTime) / 1000).toFixed(1);
-                const queue = transcribeQueue ? ' [+1待機]' : '';
-                parts.push(`⚙️ 処理中 ${procElapsed}s${_procAudioLabel}${queue}`);
+                const queueInfo = transcribeQueue
+                    ? ` | 待機: 音声${transcribeQueueSec.toFixed(1)}s`
+                    : '';
+                parts.push(`⚙️ 処理中 ${procElapsed}s${_procAudioLabel}${queueInfo}`);
             }
             if (inSpeech) {
                 const recElapsed = ((Date.now() - speechStartTime) / 1000).toFixed(1);
                 if (silenceCount > 0) {
                     const silSec = (silenceCount * CHUNK_MS / 1000).toFixed(1);
                     const limSec = (SILENCE_CHUNKS_NEEDED * CHUNK_MS / 1000).toFixed(1);
-                    parts.push(`🔴 ${recElapsed}s 無音${silSec}/${limSec}s`);
+                    parts.push(`🔴 録音 ${recElapsed}s (無音 ${silSec}/${limSec}s)`);
                 } else {
                     parts.push(`🔴 録音中 ${recElapsed}s`);
                 }
@@ -477,7 +541,15 @@
         function transcribeSegment(chunks) {
             if (!transcriber || chunks.length < MIN_SPEECH_CHUNKS) return;
             if (isProcessing) {
-                transcribeQueue = chunks;   // replace any previously queued segment
+                const sec = chunks.reduce((a, c) => a + c.length, 0) / SAMPLE_RATE;
+                if (transcribeQueue) {
+                    const oldSec = transcribeQueueSec.toFixed(1);
+                    addLog(`⏭ キュー上書き: 旧 ${oldSec}s → 新 ${sec.toFixed(1)}s (処理中につき)`);
+                } else {
+                    addLog(`📥 キュー追加: 音声 ${sec.toFixed(1)}s (処理中につき待機)`);
+                }
+                transcribeQueue    = chunks;
+                transcribeQueueSec = sec;
                 return;
             }
             _runTranscribe(chunks);
@@ -495,25 +567,33 @@
             renderDisplay();
             stopRecTimer();
             startProcTimer(audioSec);
+            addLog(`⚙️ Whisper開始: 音声 ${audioSec.toFixed(2)}s`);
 
+            const t0 = Date.now();
             try {
                 const isEnOnly = modelSelect.value.includes('.en');
                 const res = await transcriber(audio, {
                     language: isEnOnly ? 'en' : null,
                     task: 'transcribe',
                 });
+                const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
                 const text = (res.text || '').trim();
                 isPending = false;
                 if (text) {
                     results.push(text);
                     accumulatedText = results.join('\n');
                     void storageApi.saveLatestText(accumulatedText);
+                    addLog(`✅ Whisper完了: ${elapsed}s → "${text.slice(0, 60)}${text.length > 60 ? '…' : ''}"`);
+                } else {
+                    addLog(`⚠️ Whisper完了: ${elapsed}s → 空 (無音 or ノイズのみ?)`);
                 }
                 renderDisplay();
             } catch (err) {
+                const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
                 console.error(err);
                 isPending = false;
                 results.push('⚠️ ' + err.message);
+                addLog(`❌ Whisperエラー: ${elapsed}s → ${err.message}`);
                 renderDisplay();
             }
 
@@ -523,7 +603,10 @@
             // Drain queue: process the segment that arrived while we were busy
             if (transcribeQueue) {
                 const next = transcribeQueue;
-                transcribeQueue = null;
+                const qSec = transcribeQueueSec;
+                transcribeQueue    = null;
+                transcribeQueueSec = 0;
+                addLog(`▶️ キュードレイン: 音声 ${qSec.toFixed(1)}s を処理開始`);
                 _runTranscribe(next);
             } else if (isListening) {
                 setStatus('Listening…', 'listening');
@@ -564,6 +647,15 @@
                     silenceCount = 0;
                     speechBuf = [...preRoll];
                     startRecTimer();
+                    addLog(`🎙️ 発話開始: level=${level.toFixed(4)} onset=${onsetThresh.toFixed(4)} floor=${noiseFloor.toFixed(4)}`);
+                } else if (isListening) {
+                    // Periodic "why not detecting" log every 3s
+                    const now = Date.now();
+                    if (now - _lastNonDetectLog > 3000) {
+                        _lastNonDetectLog = now;
+                        const ratio = (level / onsetThresh * 100).toFixed(0);
+                        addLog(`👂 待機中: level=${level.toFixed(4)} onset=${onsetThresh.toFixed(4)} (${ratio}%) floor=${noiseFloor.toFixed(4)}${isProcessing ? ' [Whisper処理中]' : ''}`);
+                    }
                 }
             } else {
                 speechBuf.push(samples.slice());
@@ -595,16 +687,21 @@
             let seg = speechBuf.slice();
             speechBuf = [];
 
+            const rawSec = seg.reduce((a, c) => a + c.length, 0) / SAMPLE_RATE;
+
             // Trim trailing silence so Whisper receives clean audio
             const trimThresh = Math.max(MANUAL_FLOOR * 0.6, noiseFloor * OFFSET_MULT);
             while (seg.length > MIN_SPEECH_CHUNKS && rms(seg[seg.length - 1]) < trimThresh) {
                 seg.pop();
             }
+            const trimSec = seg.reduce((a, c) => a + c.length, 0) / SAMPLE_RATE;
 
             if (seg.length >= MIN_SPEECH_CHUNKS) {
+                addLog(`🔴 発話終了: 生${rawSec.toFixed(2)}s → トリム後${trimSec.toFixed(2)}s → Whisper送信`);
                 transcribeSegment(seg);
-            } else if (isListening) {
-                setStatus('Listening…', 'listening');
+            } else {
+                addLog(`🔕 発話終了: ${rawSec.toFixed(2)}s → 短すぎ (${seg.length}チャンク < ${MIN_SPEECH_CHUNKS}) → 破棄`);
+                if (isListening) setStatus('Listening…', 'listening');
             }
         }
 
