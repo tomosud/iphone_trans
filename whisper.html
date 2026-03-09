@@ -192,7 +192,7 @@
                     </div>
                     <div>
                         <label>無音カットoff <span id="silenceVal">1.5</span>s</label>
-                        <input type="range" id="silenceSlider" min="5" max="40" value="15">
+                        <input type="range" id="silenceSlider" min="2" max="40" value="6">
                     </div>
                 </div>
             </details>
@@ -273,13 +273,33 @@
         let MANUAL_FLOOR      = 0.010; // hard minimum floor (from slider)
         let SILENCE_CHUNKS_NEEDED = 6; // ~1.5 s silence to end segment
 
+        // ── Persist VAD settings ──────────────────────────────────────────────
+        function saveVadSettings() {
+            localStorage.setItem('vad_thresh',  threshSlider.value);
+            localStorage.setItem('vad_silence', silenceSlider.value);
+        }
+        function loadVadSettings() {
+            const t = localStorage.getItem('vad_thresh');
+            const s = localStorage.getItem('vad_silence');
+            if (t) { threshSlider.value  = t; }
+            if (s) { silenceSlider.value = s; }
+            // apply loaded values
+            MANUAL_FLOOR          = threshSlider.value / 1000;
+            SILENCE_CHUNKS_NEEDED = parseInt(silenceSlider.value);
+            threshVal.textContent  = MANUAL_FLOOR.toFixed(3);
+            silenceVal.textContent = (SILENCE_CHUNKS_NEEDED * CHUNK_MS / 1000).toFixed(1);
+        }
+        loadVadSettings();
+
         threshSlider.addEventListener('input', () => {
             MANUAL_FLOOR = threshSlider.value / 1000;
             threshVal.textContent = MANUAL_FLOOR.toFixed(3);
+            saveVadSettings();
         });
         silenceSlider.addEventListener('input', () => {
             SILENCE_CHUNKS_NEEDED = parseInt(silenceSlider.value);
             silenceVal.textContent = (SILENCE_CHUNKS_NEEDED * CHUNK_MS / 1000).toFixed(1);
+            saveVadSettings();
         });
 
         // ── State ─────────────────────────────────────────────────────────────
@@ -354,33 +374,49 @@
             startSubCycle(state);
         }
 
-        // Recording timer: speechStartTime is set at onset;
-        // onAudioChunk updates the display every chunk (~256ms) — no setInterval needed.
+        // ── Status display: single source of truth ────────────────────────────
+        // Called from procDisplayTimer (200ms) and onAudioChunk (~256ms).
+        // Shows both processing and recording state simultaneously.
+        let _procAudioLabel = '';
+
+        function updateStatusDisplay() {
+            const parts = [];
+            if (isProcessing) {
+                const procElapsed = ((Date.now() - procStartTime) / 1000).toFixed(1);
+                const queue = transcribeQueue ? ' [+1待機]' : '';
+                parts.push(`⚙️ 処理中 ${procElapsed}s${_procAudioLabel}${queue}`);
+            }
+            if (inSpeech) {
+                const recElapsed = ((Date.now() - speechStartTime) / 1000).toFixed(1);
+                if (silenceCount > 0) {
+                    const silSec = (silenceCount * CHUNK_MS / 1000).toFixed(1);
+                    const limSec = (SILENCE_CHUNKS_NEEDED * CHUNK_MS / 1000).toFixed(1);
+                    parts.push(`🔴 ${recElapsed}s 無音${silSec}/${limSec}s`);
+                } else {
+                    parts.push(`🔴 録音中 ${recElapsed}s`);
+                }
+            }
+            if (parts.length > 0) {
+                statusText.textContent = parts.join('  |  ');
+                statusDot.className = isProcessing ? 'status-dot processing' : 'status-dot speaking';
+            }
+        }
+
         function startRecTimer() {
             speechStartTime = Date.now();
             stopSubCycle();
-            statusText.textContent = '🔴 録音中 0.0s';
-            statusDot.className = 'status-dot speaking';
+            updateStatusDisplay();
         }
 
-        function stopRecTimer() {
-            // nothing to clear — display updates are driven by onAudioChunk
-        }
+        function stopRecTimer() {}
 
-        // Processing timer: updates statusText with elapsed seconds
         function startProcTimer(audioSec) {
             clearInterval(procDisplayTimer);
             procStartTime = Date.now();
+            _procAudioLabel = audioSec ? ` (音声${audioSec.toFixed(1)}s)` : '';
             stopSubCycle();
-            const label = audioSec ? ` (音声 ${audioSec.toFixed(1)}s)` : '';
-            const tick = () => {
-                const elapsed = ((Date.now() - procStartTime) / 1000).toFixed(1);
-                const queue = transcribeQueue ? ' [+1待機]' : '';
-                statusText.textContent = `⚙️ 処理中… ${elapsed}s${label}${queue}`;
-                statusDot.className = 'status-dot processing';
-            };
-            tick();
-            procDisplayTimer = setInterval(tick, 200);
+            updateStatusDisplay();
+            procDisplayTimer = setInterval(updateStatusDisplay, 200);
         }
 
         function stopProcTimer() {
@@ -529,21 +565,15 @@
                     return;
                 }
 
-                const elapsed = ((Date.now() - speechStartTime) / 1000).toFixed(1);
                 if (level < offsetThresh) {
                     silenceCount++;
-                    // Show silence countdown so user knows when cut will happen
-                    const silSec  = (silenceCount * CHUNK_MS / 1000).toFixed(1);
-                    const limSec  = (SILENCE_CHUNKS_NEEDED * CHUNK_MS / 1000).toFixed(1);
-                    statusText.textContent = `🔴 ${elapsed}s | 無音 ${silSec}/${limSec}s`;
-                    statusDot.className = 'status-dot speaking';
+                    updateStatusDisplay();
                     if (silenceCount >= SILENCE_CHUNKS_NEEDED) {
                         endSpeechSegment();
                     }
                 } else {
                     silenceCount = 0;
-                    statusText.textContent = `🔴 録音中 ${elapsed}s`;
-                    statusDot.className = 'status-dot speaking';
+                    updateStatusDisplay();
                 }
             }
         }
