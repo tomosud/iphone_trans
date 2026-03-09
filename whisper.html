@@ -282,10 +282,10 @@
 
         // ── VAD parameters ────────────────────────────────────────────────────
         const SAMPLE_RATE       = 16000;
-        const CHUNK_SIZE        = 4096;          // samples per worklet callback
-        const CHUNK_MS          = CHUNK_SIZE / SAMPLE_RATE * 1000; // ~256 ms
+        const CHUNK_SIZE        = 4096;          // samples per worklet callback (native rate)
+        let   CHUNK_MS          = CHUNK_SIZE / SAMPLE_RATE * 1000; // updated after AudioContext starts
         const PRE_ROLL_CHUNKS   = 4;             // ~1s pre-roll
-        const MIN_SPEECH_CHUNKS = 2;             // ignore clips shorter than ~512 ms
+        const MIN_SPEECH_CHUNKS = 2;             // ignore clips shorter than ~2 chunks
         const MAX_SPEECH_CHUNKS = Math.round(25 * SAMPLE_RATE / CHUNK_SIZE); // 25s auto-flush
 
         // Adaptive VAD: noise floor tracks background RMS; onset/offset use multipliers
@@ -395,6 +395,24 @@
         let _lastNonDetectLog = 0;
 
         // ── Helpers ───────────────────────────────────────────────────────────
+
+        // Linear-interpolation downsample from any rate to SAMPLE_RATE (16kHz).
+        // iOS Safari ignores AudioContext({ sampleRate:16000 }) and runs at 44100Hz,
+        // so we must resample before feeding audio to Whisper.
+        function downsample(samples, fromRate) {
+            if (fromRate === SAMPLE_RATE) return samples;
+            const ratio     = fromRate / SAMPLE_RATE;
+            const outLen    = Math.floor(samples.length / ratio);
+            const out       = new Float32Array(outLen);
+            for (let i = 0; i < outLen; i++) {
+                const pos = i * ratio;
+                const lo  = Math.floor(pos);
+                const hi  = Math.min(lo + 1, samples.length - 1);
+                out[i]    = samples[lo] + (samples[hi] - samples[lo]) * (pos - lo);
+            }
+            return out;
+        }
+
         function rms(buf) {
             let sum = 0;
             for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
@@ -613,8 +631,14 @@
             }
         }
 
-        // ── VAD: called with one chunk of 16kHz mono samples ─────────────────
-        function onAudioChunk(samples) {
+        // ── VAD: called with one chunk of audio samples ───────────────────────
+        function onAudioChunk(rawSamples) {
+            // Resample to 16kHz if the AudioContext is running at a different rate
+            // (iOS Safari ignores the sampleRate:16000 hint and uses 44100Hz)
+            const samples = audioCtx && audioCtx.sampleRate !== SAMPLE_RATE
+                ? downsample(rawSamples, audioCtx.sampleRate)
+                : rawSamples;
+
             // update pre-roll ring buffer
             preRoll.push(samples.slice());
             if (preRoll.length > PRE_ROLL_CHUNKS) preRoll.shift();
@@ -738,6 +762,11 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                 if (audioCtx.state === 'suspended') {
                     await audioCtx.resume();
                 }
+
+                // Log and adjust for actual sample rate (iOS may ignore sampleRate:16000 hint)
+                const actualRate = audioCtx.sampleRate;
+                CHUNK_MS = CHUNK_SIZE / actualRate * 1000;
+                addLog(`🔊 AudioContext: ${actualRate}Hz (target 16000Hz)${actualRate !== SAMPLE_RATE ? ' ⚠️ リサンプリングします' : ' ✅'}`);
 
                 mediaStream = await navigator.mediaDevices.getUserMedia({
                     audio: {
