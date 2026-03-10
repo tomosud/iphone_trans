@@ -202,7 +202,15 @@
                         <label>無音カットoff <span id="silenceVal">1.5</span>s</label>
                         <input type="range" id="silenceSlider" min="2" max="40" value="6">
                     </div>
-                    <div id="vadDebug" style="margin-top:6px;font-size:0.8rem;color:var(--muted);font-family:monospace;letter-spacing:0.02em;"></div>
+                    <canvas id="vadCanvas" style="width:100%;height:80px;display:block;border-radius:6px;margin-top:10px;background:#0d1117;"></canvas>
+                    <div style="display:flex;gap:10px;font-size:0.7rem;margin-top:3px;font-family:monospace;flex-wrap:wrap;color:var(--muted);">
+                        <span style="color:#ef4444;">▬ onset</span>
+                        <span style="color:#f59e0b;">▬ offset</span>
+                        <span style="color:#22d3ee;">╌ min floor</span>
+                        <span style="color:#555;">╌ noise floor</span>
+                        <span style="color:#22c55e;">▬ 発話中</span>
+                    </div>
+                    <div id="vadDebug" style="margin-top:4px;font-size:0.75rem;color:var(--muted);font-family:monospace;letter-spacing:0.02em;"></div>
                 </div>
             </details>
         </div>
@@ -262,6 +270,26 @@
                 <span id="logCopyMsg" style="font-size:0.75rem;color:var(--accent);display:none;">コピーしました</span>
             </div>
             <pre id="logArea" style="margin-top:6px;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px;font-size:0.75rem;font-family:monospace;white-space:pre-wrap;word-break:break-all;max-height:260px;overflow-y:auto;color:var(--fg);line-height:1.5;"></pre>
+        </details>
+    </div>
+
+    <!-- Radio stream test -->
+    <div style="max-width:900px;margin:12px auto 28px;padding:0 var(--gap);">
+        <details style="font-size:0.85rem;">
+            <summary style="cursor:pointer;color:var(--muted);user-select:none;padding:4px 0;">📻 ストリーミングラジオで試す</summary>
+            <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px;">
+                <div style="font-size:0.78rem;color:var(--muted);">インターネットラジオを音源として VAD → Whisper パイプラインをテストします。音楽ストリームではVAD検出は動きますが文字起こしは意味をなしません。</div>
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                    <select id="radioStreamSelect" style="flex:1;min-width:180px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--fg);font-size:0.85rem;">
+                        <option value="https://ice2.somafm.com/groovesalad-128-mp3">SomaFM – Groove Salad (ambient)</option>
+                        <option value="https://ice1.somafm.com/illstreet-128-mp3">SomaFM – Ill Street Blues (jazz)</option>
+                        <option value="https://ice1.somafm.com/indiepop-128-mp3">SomaFM – Indiepop Rocks</option>
+                        <option value="https://ice1.somafm.com/u80s-128-mp3">SomaFM – Underground 80s</option>
+                    </select>
+                    <button id="radioTestBtn" style="padding:6px 16px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--fg);font-size:0.85rem;cursor:pointer;white-space:nowrap;">▶ 開始</button>
+                </div>
+                <div id="radioStatus" style="font-size:0.78rem;color:var(--muted);min-height:1.2em;"></div>
+            </div>
         </details>
     </div>
 
@@ -347,6 +375,7 @@
             MANUAL_FLOOR = threshSlider.value / 1000;
             threshVal.textContent = MANUAL_FLOOR.toFixed(3);
             saveVadSettings();
+            drawVadCanvas();
         });
         silenceSlider.addEventListener('input', () => {
             SILENCE_CHUNKS_NEEDED = parseInt(silenceSlider.value);
@@ -356,6 +385,76 @@
 
         langSelect.addEventListener('change', saveVadSettings);
         modelSelect.addEventListener('change', saveVadSettings);
+
+        // ── VAD canvas visualization ──────────────────────────────────────────
+        const vadCanvas    = document.getElementById('vadCanvas');
+        const vadCanvasCtx = vadCanvas ? vadCanvas.getContext('2d') : null;
+        const VAD_HIST_LEN = 160;
+        const VAD_SCALE    = 0.10; // full height = RMS 0.10
+        const vadLevels    = new Array(VAD_HIST_LEN).fill(0);
+
+        function drawVadCanvas() {
+            if (!vadCanvasCtx || !vadCanvas) return;
+            const dpr = window.devicePixelRatio || 1;
+            const cssW = vadCanvas.clientWidth;
+            const cssH = vadCanvas.clientHeight || 80;
+            if (vadCanvas.width !== Math.round(cssW * dpr) || vadCanvas.height !== Math.round(cssH * dpr)) {
+                vadCanvas.width  = Math.round(cssW * dpr);
+                vadCanvas.height = Math.round(cssH * dpr);
+            }
+            const w = vadCanvas.width, h = vadCanvas.height;
+            function yOf(v) { return h - Math.max(0, Math.min(v / VAD_SCALE, 1)) * h; }
+
+            vadCanvasCtx.fillStyle = '#0d1117';
+            vadCanvasCtx.fillRect(0, 0, w, h);
+
+            const onsetT  = Math.max(MANUAL_FLOOR, noiseFloor * ONSET_MULT);
+            const offsetT = Math.max(MANUAL_FLOOR * 0.6, noiseFloor * OFFSET_MULT);
+            const barW = w / VAD_HIST_LEN;
+
+            for (let i = 0; i < vadLevels.length; i++) {
+                const bh = Math.max(0, Math.min(vadLevels[i] / VAD_SCALE, 1)) * h;
+                vadCanvasCtx.fillStyle = vadLevels[i] >= onsetT ? '#22c55e' : '#3b82f6';
+                vadCanvasCtx.fillRect(i * barW, h - bh, Math.max(1, barW - 1), bh);
+            }
+
+            vadCanvasCtx.font = `${Math.round(9 * dpr)}px monospace`;
+
+            // noise floor (dark gray dashed)
+            vadCanvasCtx.strokeStyle = '#444'; vadCanvasCtx.lineWidth = dpr;
+            vadCanvasCtx.setLineDash([4 * dpr, 4 * dpr]);
+            vadCanvasCtx.beginPath(); vadCanvasCtx.moveTo(0, yOf(noiseFloor)); vadCanvasCtx.lineTo(w, yOf(noiseFloor)); vadCanvasCtx.stroke();
+
+            // MANUAL_FLOOR (cyan dashed)
+            vadCanvasCtx.strokeStyle = '#22d3ee';
+            vadCanvasCtx.setLineDash([3 * dpr, 3 * dpr]);
+            vadCanvasCtx.beginPath(); vadCanvasCtx.moveTo(0, yOf(MANUAL_FLOOR)); vadCanvasCtx.lineTo(w, yOf(MANUAL_FLOOR)); vadCanvasCtx.stroke();
+
+            // offset (amber solid)
+            vadCanvasCtx.strokeStyle = '#f59e0b'; vadCanvasCtx.lineWidth = dpr;
+            vadCanvasCtx.setLineDash([]);
+            vadCanvasCtx.beginPath(); vadCanvasCtx.moveTo(0, yOf(offsetT)); vadCanvasCtx.lineTo(w, yOf(offsetT)); vadCanvasCtx.stroke();
+
+            // onset (red, thicker)
+            vadCanvasCtx.strokeStyle = '#ef4444'; vadCanvasCtx.lineWidth = 2 * dpr;
+            vadCanvasCtx.beginPath(); vadCanvasCtx.moveTo(0, yOf(onsetT)); vadCanvasCtx.lineTo(w, yOf(onsetT)); vadCanvasCtx.stroke();
+            vadCanvasCtx.lineWidth = dpr; vadCanvasCtx.setLineDash([]);
+
+            // labels
+            const oy = yOf(onsetT);
+            vadCanvasCtx.fillStyle = '#ef4444';
+            vadCanvasCtx.fillText(`onset ${onsetT.toFixed(3)}`, 4 * dpr, Math.max(10 * dpr, oy - 3 * dpr));
+
+            const ofy = yOf(offsetT);
+            vadCanvasCtx.fillStyle = '#f59e0b';
+            vadCanvasCtx.fillText(`offset ${offsetT.toFixed(3)}`, 4 * dpr, Math.min(h - 2 * dpr, ofy + 10 * dpr));
+
+            const floorLabel = `min ${MANUAL_FLOOR.toFixed(3)}`;
+            const lw = vadCanvasCtx.measureText(floorLabel).width;
+            const fy = yOf(MANUAL_FLOOR);
+            vadCanvasCtx.fillStyle = '#22d3ee';
+            vadCanvasCtx.fillText(floorLabel, w - lw - 4 * dpr, Math.max(10 * dpr, fy - 3 * dpr));
+        }
 
         // ── Debug log ─────────────────────────────────────────────────────────
         let _logLines   = [];
@@ -780,6 +879,11 @@
 
             volFill.className = 'vol-fill' + (level > onsetThresh ? ' active' : '');
 
+            // VAD canvas
+            vadLevels.push(level);
+            if (vadLevels.length > VAD_HIST_LEN) vadLevels.shift();
+            drawVadCanvas();
+
             // Live VAD debug display (visible when settings panel is open)
             vadDebug.textContent =
                 `floor:${noiseFloor.toFixed(4)}  onset:${onsetThresh.toFixed(4)}  offset:${offsetThresh.toFixed(4)}  now:${level.toFixed(4)}`;
@@ -1109,6 +1213,115 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
         modelSelect.addEventListener('change', loadModel);
 
         renderDisplay();
+
+        // ── Radio stream test ─────────────────────────────────────────────────
+        const radioTestBtn   = document.getElementById('radioTestBtn');
+        const radioStreamSel = document.getElementById('radioStreamSelect');
+        const radioStatus    = document.getElementById('radioStatus');
+
+        let radioAudio   = null;
+        let radioCtx     = null;
+        let radioWorklet = null;
+        let radioScript  = null;
+        let isRadioPlaying = false;
+
+        function stopRadioTest() {
+            isRadioPlaying = false;
+            isListening = false;
+            flushBuffer();
+            stopRecTimer();
+
+            if (radioWorklet) { radioWorklet.disconnect(); radioWorklet = null; }
+            if (radioScript)  { radioScript.disconnect();  radioScript  = null; }
+            if (radioAudio)   { radioAudio.pause(); radioAudio.src = ''; radioAudio = null; }
+            if (radioCtx)     { radioCtx.close().catch(() => {}); radioCtx = null; }
+
+            inSpeech = false; silenceCount = 0; speechBuf = []; preRoll = [];
+            smoothedRms = 0;
+
+            radioTestBtn.textContent = '▶ 開始';
+            radioTestBtn.style.background = 'var(--card)';
+            radioTestBtn.style.color = 'var(--fg)';
+            volWrap.classList.remove('visible');
+            volFill.style.width = '0%';
+            recordBtn.disabled = false;
+            if (!isProcessing) setStatus('Ready — tap Start to listen', 'listening');
+        }
+
+        radioTestBtn.addEventListener('click', async () => {
+            if (isRadioPlaying) { stopRadioTest(); return; }
+            if (!transcriber)   { radioStatus.textContent = '⚠️ モデル未ロード'; return; }
+            if (isListening)    { radioStatus.textContent = '⚠️ マイク録音中は使用不可'; return; }
+
+            const streamUrl = radioStreamSel.value;
+            radioStatus.textContent = '接続中…';
+            radioTestBtn.disabled = true;
+            addLog(`📻 ラジオ接続: ${streamUrl}`);
+
+            try {
+                radioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+
+                radioAudio = new Audio();
+                radioAudio.crossOrigin = 'anonymous';
+                radioAudio.src = streamUrl;
+
+                const source = radioCtx.createMediaElementSource(radioAudio);
+
+                let useWorklet = false;
+                if (radioCtx.audioWorklet) {
+                    try {
+                        const blobUrl = buildWorkletBlob(CHUNK_SIZE);
+                        await radioCtx.audioWorklet.addModule(blobUrl);
+                        URL.revokeObjectURL(blobUrl);
+                        radioWorklet = new AudioWorkletNode(radioCtx, 'chunk-processor');
+                        radioWorklet.port.onmessage = (e) => {
+                            if (isRadioPlaying) onAudioChunk(e.data);
+                        };
+                        source.connect(radioWorklet);
+                        radioWorklet.connect(radioCtx.destination);
+                        useWorklet = true;
+                    } catch (e) {
+                        console.warn('AudioWorklet failed for radio, falling back:', e);
+                    }
+                }
+                if (!useWorklet) {
+                    radioScript = radioCtx.createScriptProcessor(CHUNK_SIZE, 1, 1);
+                    radioScript.onaudioprocess = (e) => {
+                        if (isRadioPlaying) onAudioChunk(new Float32Array(e.inputBuffer.getChannelData(0)));
+                    };
+                    source.connect(radioScript);
+                    radioScript.connect(radioCtx.destination);
+                }
+
+                // Reset VAD state
+                inSpeech = false; silenceCount = 0; speechBuf = []; preRoll = [];
+                smoothedRms = 0; noiseFloor = MANUAL_FLOOR;
+                isListening = true;
+                isRadioPlaying = true;
+
+                await radioAudio.play();
+
+                CHUNK_MS = CHUNK_SIZE / radioCtx.sampleRate * 1000;
+
+                setStatus('ラジオ受信中…', 'listening');
+                radioTestBtn.textContent = '⏹ 停止';
+                radioTestBtn.style.background = 'var(--accent)';
+                radioTestBtn.style.color = '#fff';
+                radioStatus.textContent = `受信中: ${radioStreamSel.options[radioStreamSel.selectedIndex].text}`;
+                volWrap.classList.add('visible');
+                recordBtn.disabled = true;
+                addLog(`✅ ラジオ受信開始`);
+
+            } catch (err) {
+                addLog(`❌ ラジオ接続失敗: ${err.message}`);
+                radioStatus.textContent = `エラー: ${err.message}`;
+                console.error(err);
+                isListening = false;
+                if (radioCtx) { radioCtx.close().catch(() => {}); radioCtx = null; }
+            } finally {
+                radioTestBtn.disabled = false;
+            }
+        });
 
         // ── Test mode (?test in URL) ──────────────────────────────────────────
         if (new URLSearchParams(location.search).has('test')) {
