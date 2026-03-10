@@ -1508,6 +1508,17 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                         decodeFailCount++;
                         if (decodeFailCount <= 5 || decodeFailCount % 20 === 0)
                             addLog(`⚠️ デコード失敗 #${decodeOk + decodeFailCount} (${DECODE_BYTES}B@sync): ${e.message}`);
+                        // Rescue bytes after the second sync word to avoid ~9s audio gap
+                        const nextSync = findMp3Sync(slice, 4);
+                        if (nextSync > 0) {
+                            const rescued = slice.slice(nextSync);
+                            const newBuf = new Uint8Array(rescued.length + rawBuf.length);
+                            newBuf.set(rescued);
+                            newBuf.set(rawBuf, rescued.length);
+                            rawBuf = newBuf;
+                            if (decodeFailCount <= 5 || decodeFailCount % 20 === 0)
+                                addLog(`♻️ ${rescued.length}B救済 (sync@${nextSync})`);
+                        }
                     }
                 }
             } catch (e) {
