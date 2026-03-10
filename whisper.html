@@ -240,8 +240,18 @@
 
     </div>
 
-    <!-- Debug log panel -->
+    <!-- Debug: recent audio clips -->
     <div style="max-width:900px;margin:12px auto 0;padding:0 var(--gap);">
+        <details id="audioClipsDetails" style="font-size:0.82rem;">
+            <summary style="cursor:pointer;color:var(--muted);user-select:none;padding:4px 0;">
+                🔊 最近の音声 <span id="audioClipsBadge" style="background:var(--accent);color:#fff;border-radius:8px;padding:1px 7px;font-size:0.75rem;margin-left:6px;display:none;"></span>
+            </summary>
+            <div id="audioClipsList" style="margin-top:6px;font-size:0.75rem;color:var(--muted);font-family:monospace;">まだ音声なし</div>
+        </details>
+    </div>
+
+    <!-- Debug log panel -->
+    <div style="max-width:900px;margin:6px auto 0;padding:0 var(--gap);">
         <details id="logDetails" style="font-size:0.82rem;">
             <summary style="cursor:pointer;color:var(--muted);user-select:none;padding:4px 0;">
                 🪵 デバッグログ <span id="logBadge" style="background:var(--accent);color:#fff;border-radius:8px;padding:1px 7px;font-size:0.75rem;margin-left:6px;display:none;"></span>
@@ -383,6 +393,78 @@
             _logStart = Date.now();
             logArea.textContent = '';
         });
+
+        // ── Recent audio clips (debug replay) ────────────────────────────────
+        const MAX_AUDIO_CLIPS = 5;
+        let recentAudioClips = []; // { t, sec, audio: Float32Array }
+        const audioClipsList   = document.getElementById('audioClipsList');
+        const audioClipsBadge  = document.getElementById('audioClipsBadge');
+        const audioClipsDetails = document.getElementById('audioClipsDetails');
+        let _audioClipsBadgeN = 0;
+
+        audioClipsDetails.addEventListener('toggle', () => {
+            if (audioClipsDetails.open) {
+                _audioClipsBadgeN = 0;
+                audioClipsBadge.style.display = 'none';
+            }
+        });
+
+        function storeAudioClip(audio, sec) {
+            const t = new Date().toLocaleTimeString('ja-JP');
+            recentAudioClips.push({ t, sec, audio: audio.slice() });
+            if (recentAudioClips.length > MAX_AUDIO_CLIPS) recentAudioClips.shift();
+            renderAudioClips();
+            if (!audioClipsDetails.open) {
+                _audioClipsBadgeN++;
+                audioClipsBadge.textContent = _audioClipsBadgeN > 9 ? '9+' : _audioClipsBadgeN;
+                audioClipsBadge.style.display = 'inline';
+            }
+        }
+
+        function renderAudioClips() {
+            audioClipsList.innerHTML = '';
+            if (recentAudioClips.length === 0) {
+                audioClipsList.textContent = 'まだ音声なし';
+                return;
+            }
+            [...recentAudioClips].reverse().forEach((clip, i) => {
+                const idx = recentAudioClips.length - i;
+                const row = document.createElement('div');
+                row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:5px;';
+
+                const label = document.createElement('span');
+                label.style.cssText = 'flex:1;color:var(--fg);';
+                label.textContent = `#${idx}  ${clip.t}  ${clip.sec.toFixed(2)}s`;
+
+                const btn = document.createElement('button');
+                btn.textContent = '▶ 再生';
+                btn.style.cssText = 'font-size:0.8rem;padding:3px 10px;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;color:var(--fg);white-space:nowrap;';
+                btn.addEventListener('click', () => playAudioClip(clip.audio, btn));
+
+                row.appendChild(label);
+                row.appendChild(btn);
+                audioClipsList.appendChild(row);
+            });
+        }
+
+        async function playAudioClip(audioData, btn) {
+            btn.disabled = true;
+            btn.textContent = '▶ 再生中…';
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+                const buf = ctx.createBuffer(1, audioData.length, SAMPLE_RATE);
+                buf.copyToChannel(audioData, 0);
+                const src = ctx.createBufferSource();
+                src.buffer = buf;
+                src.connect(ctx.destination);
+                src.start();
+                src.onended = () => { ctx.close(); btn.disabled = false; btn.textContent = '▶ 再生'; };
+            } catch (e) {
+                btn.disabled = false;
+                btn.textContent = '▶ 再生';
+                addLog(`❌ 再生エラー: ${e.message}`);
+            }
+        }
 
         // ── State ─────────────────────────────────────────────────────────────
         const placeholderText = 'Results will appear here as you speak…';
@@ -598,6 +680,7 @@
             for (const c of chunks) { audio.set(c, off); off += c.length; }
 
             const audioSec = totalLen / SAMPLE_RATE;
+            storeAudioClip(audio, audioSec);
 
             // RMS-normalize audio to a fixed target level so quiet lecture
             // recordings are amplified to the same level as close-mic speech.
