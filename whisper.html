@@ -160,7 +160,7 @@
                 <label for="modelSelect">Model:</label>
                 <select id="modelSelect">
                     <option value="Xenova/whisper-tiny.en">whisper-tiny.en (EN only · fastest · ~75MB)</option>
-                    <option value="Xenova/whisper-base.en">whisper-base.en (EN only · ~142MB)</option>
+                    <option value="Xenova/whisper-base.en">whisper-base.en (EN only · better · ~142MB)</option>
                     <option value="Xenova/whisper-tiny">whisper-tiny (multilingual · ~75MB)</option>
                     <option value="Xenova/whisper-base">whisper-base (multilingual · ~142MB)</option>
                 </select>
@@ -595,6 +595,22 @@
             for (const c of chunks) { audio.set(c, off); off += c.length; }
 
             const audioSec = totalLen / SAMPLE_RATE;
+
+            // RMS-normalize audio to a fixed target level so quiet lecture
+            // recordings are amplified to the same level as close-mic speech.
+            let rmsIn = 0;
+            for (let i = 0; i < audio.length; i++) rmsIn += audio[i] * audio[i];
+            rmsIn = Math.sqrt(rmsIn / audio.length);
+            let normalizedAudio = audio;
+            if (rmsIn > 0.001) {
+                const targetRms = 0.1;
+                const scale = Math.min(targetRms / rmsIn, 8); // cap 8× gain
+                normalizedAudio = new Float32Array(audio.length);
+                for (let i = 0; i < audio.length; i++) {
+                    normalizedAudio[i] = Math.max(-1, Math.min(1, audio[i] * scale));
+                }
+            }
+
             isPending = true;
             isProcessing = true;
             renderDisplay();
@@ -602,11 +618,11 @@
             startProcTimer(audioSec);
             const selectedLang = langSelect.value || null;
             const modelName    = modelSelect.value.split('/').pop();
-            addLog(`⚙️ Whisper開始: 音声 ${audioSec.toFixed(2)}s  model=${modelName}  lang=${selectedLang ?? 'auto'}`);
+            addLog(`⚙️ Whisper開始: 音声 ${audioSec.toFixed(2)}s  rms=${rmsIn.toFixed(4)}  model=${modelName}  lang=${selectedLang ?? 'auto'}`);
 
             const t0 = Date.now();
             try {
-                const res = await transcriber(audio, {
+                const res = await transcriber(normalizedAudio, {
                     language: selectedLang,
                     task: 'transcribe',
                 });
@@ -783,12 +799,15 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                 CHUNK_MS = CHUNK_SIZE / actualRate * 1000;
                 addLog(`🔊 AudioContext: ${actualRate}Hz (target 16000Hz)${actualRate !== SAMPLE_RATE ? ' ⚠️ リサンプリングします' : ' ✅'}`);
 
+                // Disable browser DSP for lecture recording: echo cancellation
+                // treats far-field speaker audio as "echo" and cancels it.
+                // Whisper handles noise internally so we pass raw audio.
                 mediaStream = await navigator.mediaDevices.getUserMedia({
                     audio: {
                         channelCount: 1,
-                        echoCancellation: true,
-                        noiseSuppression: true,
-                        autoGainControl: true,
+                        echoCancellation: false,
+                        noiseSuppression: false,
+                        autoGainControl: false,
                     }
                 });
 
