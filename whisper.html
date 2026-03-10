@@ -307,7 +307,7 @@
 
         // Auto gain control for quiet speech (after manual gain, before VAD/Whisper)
         const AGC_TARGET_RMS = 0.020;  // target RMS after gain (was 0.030 — too high, raised gain needed)
-        const AGC_MIN_GAIN   = 1.0;
+        const AGC_MIN_GAIN   = 0.2;    // allow attenuation for loud mics (下げOK)
         const AGC_MAX_GAIN   = 8.0;    // allow up to 8× boost for distant/quiet mics (was 2.0)
         const AGC_ALPHA      = 0.05;   // slightly faster gain tracking
 
@@ -1061,16 +1061,18 @@
                 return;
             }
 
-            // ── Continuous recording: always record, segment on silence only ──────
-            // Onset detection was discarding the beginning of quiet/delayed speech.
-            // Instead, record everything after warmup and let silence end a segment.
+            // ── Onset detection with pre-roll ─────────────────────────────────
+            // Use offsetThresh (lower than onsetThresh) to catch quiet speech.
+            // preRoll ensures we don't miss the beginning of a syllable.
+            // Silence is skipped here to prevent endless silent-segment loops.
             if (!inSpeech) {
+                if (level < offsetThresh) return; // silence — wait for audio
                 inSpeech = true;
                 onsetCount = 0;
                 silenceCount = 0;
                 speechBuf = [...preRoll];
                 startRecTimer();
-                addLog(`🎙️ 録音開始 (連続): floor=${noiseFloor.toFixed(4)} agc=${autoGain.toFixed(2)}x`);
+                addLog(`🎙️ 録音開始: level=${level.toFixed(4)} floor=${noiseFloor.toFixed(4)} agc=${autoGain.toFixed(2)}x`);
             }
             {
                 speechBuf.push(samples.slice());
@@ -1122,14 +1124,8 @@
             } else {
                 addLog(`🔕 セグメント破棄: ${rawSec.toFixed(2)}s → 短すぎ (${seg.length}チャンク < ${MIN_SPEECH_CHUNKS})`);
             }
-            // Immediately restart recording (continuous mode) — do not wait for
-            // the next onset; silence-based segmentation handles all splitting.
-            if (isListening && !isRadioPlaying) {
-                inSpeech = true;
-                silenceCount = 0;
-                speechBuf = [];
-                startRecTimer();
-            }
+            // Do NOT force-restart here. onAudioChunk will begin a new segment
+            // as soon as audio rises above offsetThresh (with preRoll context).
         }
 
         // ── AudioWorklet: inline processor via blob URL ───────────────────────
