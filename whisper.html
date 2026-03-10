@@ -963,7 +963,10 @@
             // Only update gain when NOT speaking to prevent gain drift during speech,
             // which would destabilise the audio fed to Whisper.
             const rawLevel = rms(samples);
-            if (!inSpeech) {
+            // Update AGC when signal is quiet (rawLevel < noiseFloor*3) even while
+            // inSpeech=true (continuous mode). This prevents gain freezing permanently
+            // at the warmup value and handles room-noise changes mid-session.
+            if (!inSpeech || rawLevel < noiseFloor * 3) {
                 const desiredGain = Math.max(
                     AGC_MIN_GAIN,
                     Math.min(AGC_MAX_GAIN, AGC_TARGET_RMS / Math.max(rawLevel, 0.002))
@@ -992,11 +995,14 @@
             const onsetThresh  = Math.max(MANUAL_FLOOR, noiseFloor * effectiveOnsetMult);
             const offsetThresh = Math.max(MANUAL_FLOOR * 0.6, noiseFloor * effectiveOffsetMult);
 
-            // Adaptive noise floor: only update when signal is clearly background
-            // (level below onset threshold) and not in speech — prevents speech audio
-            // from contaminating the noise estimate and breaking subsequent detection.
-            if (!inSpeech && level < onsetThresh) {
-                noiseFloor = noiseFloor * (1 - NOISE_ALPHA) + level * NOISE_ALPHA;
+            // Adaptive noise floor: update whenever level is clearly below speech range.
+            // In continuous mode inSpeech is always true, so the old !inSpeech guard
+            // would permanently freeze the floor at its warmup value.
+            // Using a level cap (< noiseFloor*4) prevents loud speech from raising the
+            // floor; a slower alpha during speech prevents instability.
+            if (level < noiseFloor * 4) {
+                const noiseAlpha = inSpeech ? NOISE_ALPHA * 0.2 : NOISE_ALPHA;
+                noiseFloor = noiseFloor * (1 - noiseAlpha) + level * noiseAlpha;
                 noiseFloor = Math.max(noiseFloor, MANUAL_FLOOR * 0.3);
             }
             // Slowly return toward manual floor so VAD does not "stick" too high.
@@ -1023,7 +1029,8 @@
             const pct = (level / onsetThresh * 100).toFixed(0);
             const bar = '█'.repeat(Math.min(20, Math.round(level / onsetThresh * 10))) +
                         '░'.repeat(Math.max(0, 10 - Math.round(level / onsetThresh * 10)));
-            const stateLabel = inSpeech ? '🔴REC' : warmupCount < WARMUP_CHUNKS ? '⏳CAL' : '👂WAI';
+            // warmupCount < WARMUP_CHUNKS returns early above, so this point is always post-warmup.
+            const stateLabel = inSpeech ? '🔴REC' : '👂WAI';
             vadDebug.textContent =
                 `${stateLabel} ${bar} ${pct}%→onset  now:${level.toFixed(4)} onset:${onsetThresh.toFixed(4)}(×${effectiveOnsetMult.toFixed(1)}) floor:${noiseFloor.toFixed(4)} agc:${autoGain.toFixed(2)}x`;
 
