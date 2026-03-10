@@ -202,7 +202,15 @@
                         <label>無音カットoff <span id="silenceVal">1.5</span>s</label>
                         <input type="range" id="silenceSlider" min="2" max="40" value="6">
                     </div>
-                    <div id="vadDebug" style="margin-top:6px;font-size:0.8rem;color:var(--muted);font-family:monospace;letter-spacing:0.02em;"></div>
+                    <canvas id="vadCanvas" style="width:100%;height:80px;display:block;border-radius:6px;margin-top:10px;background:#0d1117;"></canvas>
+                    <div style="display:flex;gap:10px;font-size:0.7rem;margin-top:3px;font-family:monospace;flex-wrap:wrap;color:var(--muted);">
+                        <span style="color:#ef4444;">▬ onset</span>
+                        <span style="color:#f59e0b;">▬ offset</span>
+                        <span style="color:#22d3ee;">╌ min floor</span>
+                        <span style="color:#555;">╌ noise floor</span>
+                        <span style="color:#22c55e;">▬ 発話中</span>
+                    </div>
+                    <div id="vadDebug" style="margin-top:4px;font-size:0.75rem;color:var(--muted);font-family:monospace;letter-spacing:0.02em;"></div>
                 </div>
             </details>
         </div>
@@ -367,6 +375,7 @@
             MANUAL_FLOOR = threshSlider.value / 1000;
             threshVal.textContent = MANUAL_FLOOR.toFixed(3);
             saveVadSettings();
+            drawVadCanvas();
         });
         silenceSlider.addEventListener('input', () => {
             SILENCE_CHUNKS_NEEDED = parseInt(silenceSlider.value);
@@ -376,6 +385,76 @@
 
         langSelect.addEventListener('change', saveVadSettings);
         modelSelect.addEventListener('change', saveVadSettings);
+
+        // ── VAD canvas visualization ──────────────────────────────────────────
+        const vadCanvas    = document.getElementById('vadCanvas');
+        const vadCanvasCtx = vadCanvas ? vadCanvas.getContext('2d') : null;
+        const VAD_HIST_LEN = 160;
+        const VAD_SCALE    = 0.10; // full height = RMS 0.10
+        const vadLevels    = new Array(VAD_HIST_LEN).fill(0);
+
+        function drawVadCanvas() {
+            if (!vadCanvasCtx || !vadCanvas) return;
+            const dpr = window.devicePixelRatio || 1;
+            const cssW = vadCanvas.clientWidth;
+            const cssH = vadCanvas.clientHeight || 80;
+            if (vadCanvas.width !== Math.round(cssW * dpr) || vadCanvas.height !== Math.round(cssH * dpr)) {
+                vadCanvas.width  = Math.round(cssW * dpr);
+                vadCanvas.height = Math.round(cssH * dpr);
+            }
+            const w = vadCanvas.width, h = vadCanvas.height;
+            function yOf(v) { return h - Math.max(0, Math.min(v / VAD_SCALE, 1)) * h; }
+
+            vadCanvasCtx.fillStyle = '#0d1117';
+            vadCanvasCtx.fillRect(0, 0, w, h);
+
+            const onsetT  = Math.max(MANUAL_FLOOR, noiseFloor * ONSET_MULT);
+            const offsetT = Math.max(MANUAL_FLOOR * 0.6, noiseFloor * OFFSET_MULT);
+            const barW = w / VAD_HIST_LEN;
+
+            for (let i = 0; i < vadLevels.length; i++) {
+                const bh = Math.max(0, Math.min(vadLevels[i] / VAD_SCALE, 1)) * h;
+                vadCanvasCtx.fillStyle = vadLevels[i] >= onsetT ? '#22c55e' : '#3b82f6';
+                vadCanvasCtx.fillRect(i * barW, h - bh, Math.max(1, barW - 1), bh);
+            }
+
+            vadCanvasCtx.font = `${Math.round(9 * dpr)}px monospace`;
+
+            // noise floor (dark gray dashed)
+            vadCanvasCtx.strokeStyle = '#444'; vadCanvasCtx.lineWidth = dpr;
+            vadCanvasCtx.setLineDash([4 * dpr, 4 * dpr]);
+            vadCanvasCtx.beginPath(); vadCanvasCtx.moveTo(0, yOf(noiseFloor)); vadCanvasCtx.lineTo(w, yOf(noiseFloor)); vadCanvasCtx.stroke();
+
+            // MANUAL_FLOOR (cyan dashed)
+            vadCanvasCtx.strokeStyle = '#22d3ee';
+            vadCanvasCtx.setLineDash([3 * dpr, 3 * dpr]);
+            vadCanvasCtx.beginPath(); vadCanvasCtx.moveTo(0, yOf(MANUAL_FLOOR)); vadCanvasCtx.lineTo(w, yOf(MANUAL_FLOOR)); vadCanvasCtx.stroke();
+
+            // offset (amber solid)
+            vadCanvasCtx.strokeStyle = '#f59e0b'; vadCanvasCtx.lineWidth = dpr;
+            vadCanvasCtx.setLineDash([]);
+            vadCanvasCtx.beginPath(); vadCanvasCtx.moveTo(0, yOf(offsetT)); vadCanvasCtx.lineTo(w, yOf(offsetT)); vadCanvasCtx.stroke();
+
+            // onset (red, thicker)
+            vadCanvasCtx.strokeStyle = '#ef4444'; vadCanvasCtx.lineWidth = 2 * dpr;
+            vadCanvasCtx.beginPath(); vadCanvasCtx.moveTo(0, yOf(onsetT)); vadCanvasCtx.lineTo(w, yOf(onsetT)); vadCanvasCtx.stroke();
+            vadCanvasCtx.lineWidth = dpr; vadCanvasCtx.setLineDash([]);
+
+            // labels
+            const oy = yOf(onsetT);
+            vadCanvasCtx.fillStyle = '#ef4444';
+            vadCanvasCtx.fillText(`onset ${onsetT.toFixed(3)}`, 4 * dpr, Math.max(10 * dpr, oy - 3 * dpr));
+
+            const ofy = yOf(offsetT);
+            vadCanvasCtx.fillStyle = '#f59e0b';
+            vadCanvasCtx.fillText(`offset ${offsetT.toFixed(3)}`, 4 * dpr, Math.min(h - 2 * dpr, ofy + 10 * dpr));
+
+            const floorLabel = `min ${MANUAL_FLOOR.toFixed(3)}`;
+            const lw = vadCanvasCtx.measureText(floorLabel).width;
+            const fy = yOf(MANUAL_FLOOR);
+            vadCanvasCtx.fillStyle = '#22d3ee';
+            vadCanvasCtx.fillText(floorLabel, w - lw - 4 * dpr, Math.max(10 * dpr, fy - 3 * dpr));
+        }
 
         // ── Debug log ─────────────────────────────────────────────────────────
         let _logLines   = [];
@@ -799,6 +878,11 @@
             }
 
             volFill.className = 'vol-fill' + (level > onsetThresh ? ' active' : '');
+
+            // VAD canvas
+            vadLevels.push(level);
+            if (vadLevels.length > VAD_HIST_LEN) vadLevels.shift();
+            drawVadCanvas();
 
             // Live VAD debug display (visible when settings panel is open)
             vadDebug.textContent =
