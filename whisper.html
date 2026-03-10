@@ -214,8 +214,8 @@
                     <div class="controls">
                         <button class="btn-record" id="recordBtn" disabled>🎙️ Start listening</button>
                         <button class="btn-send" id="sendBtn" disabled>送信</button>
-                        <button id="sampleBtn" style="font-size:0.8rem;padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;color:var(--fg);" disabled title="JFK speech sample (11s) — direct to Whisper">▶ Sample</button>
-                        <button id="sampleLongBtn" style="font-size:0.8rem;padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;color:var(--fg);" disabled title="JFK ×5 (57s) — through VAD pipeline to test segmentation">▶ Long</button>
+                        <!-- <button id="sampleBtn" style="font-size:0.8rem;padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;color:var(--fg);" disabled title="JFK speech sample (11s) — direct to Whisper">▶ Sample</button> -->
+                        <!-- <button id="sampleLongBtn" style="font-size:0.8rem;padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;color:var(--fg);" disabled title="JFK ×5 (57s) — through VAD pipeline to test segmentation">▶ Long</button> -->
                     </div>
                     <button id="clearBtn" class="clear-button" type="button">Clear</button>
                 </div>
@@ -568,8 +568,8 @@
                 });
                 setStatus('Ready — tap Start to listen', 'listening');
                 recordBtn.disabled = false;
-                sampleBtn.disabled = false;
-                sampleLongBtn.disabled = false;
+                // sampleBtn.disabled = false;
+                // sampleLongBtn.disabled = false;
                 setTimeout(() => progressBar.classList.remove('visible'), 800);
             } catch (err) {
                 console.error(err);
@@ -928,7 +928,7 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
 
         clearBtn.addEventListener('click', () => void clearAll());
 
-        // ── Sample audio test ─────────────────────────────────────────────────
+        /* // ── Sample audio test ─────────────────────────────────────────────────
         // JFK "Ask not what your country can do for you" (~11s, 16kHz mono WAV)
         sampleBtn.addEventListener('click', async () => {
             if (!transcriber) { addLog('⚠️ モデル未ロード'); return; }
@@ -1010,7 +1010,7 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                 sampleLongBtn.disabled = false;
                 sampleLongBtn.textContent = '▶ Long';
             }
-        });
+        }); */
 
         const savedLink = document.getElementById('savedLink');
         savedLink.addEventListener('click', async (e) => {
