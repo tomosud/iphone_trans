@@ -192,11 +192,11 @@
             </div>
 
             <details style="font-size:0.85rem;">
-                <summary style="cursor:pointer;color:var(--muted);user-select:none;">VAD settings</summary>
+                <summary style="cursor:pointer;color:var(--muted);user-select:none;">VAD settings (advanced)</summary>
                 <div class="vad-config" style="margin-top:8px;">
                     <div>
-                        <label>最低閾値 <span id="threshVal">0.010</span>（自動適応）</label>
-                        <input type="range" id="threshSlider" min="1" max="50" value="10">
+                        <label>最低閾値 <span id="threshVal">0.001</span>（自動適応）</label>
+                        <input type="range" id="threshSlider" min="1" max="50" value="1">
                     </div>
                     <div>
                         <label>無音カットoff <span id="silenceVal">1.5</span>s</label>
@@ -368,18 +368,36 @@
         const ONSET_CHUNKS_NEEDED = 2;           // require 2 consecutive hits before speech start
 
         // Adaptive VAD: noise floor tracks background RMS; onset/offset use multipliers
-        const NOISE_ALPHA   = 0.004;   // noise floor adaptation speed (~250 chunks to adapt)
-        const ONSET_MULT    = 4.0;     // onset  threshold = noiseFloor × ONSET_MULT
-        const OFFSET_MULT   = 2.2;     // offset threshold = noiseFloor × OFFSET_MULT
+        const NOISE_ALPHA   = 0.006;   // noise floor adaptation speed (faster post-speech readaptation)
+        // ONSET_MULT / OFFSET_MULT are now computed dynamically per chunk (effectiveOnsetMult / effectiveOffsetMult)
 
         // Auto gain control for quiet speech (after manual gain, before VAD/Whisper)
         const AGC_TARGET_RMS = 0.030;
         const AGC_MIN_GAIN   = 1.0;
-        const AGC_MAX_GAIN   = 10.0;
-        const AGC_ALPHA      = 0.06;
+        const AGC_MAX_GAIN   = 4.0;    // reduced from 10.0 to prevent clipping
+        const AGC_ALPHA      = 0.03;   // slower tracking for smoother gain (was 0.06)
 
-        let MANUAL_FLOOR      = 0.010; // hard minimum floor (from slider)
+        // Warmup: suppress speech detection for the first N chunks after startListening()
+        const WARMUP_CHUNKS = 20; // ~5s at 16kHz/4096 samples per chunk (4096/16000 × 20 ≈ 5.1s)
+        let warmupCount = 0;
+
+        let MANUAL_FLOOR      = 0.005; // hard minimum floor – kept low so adaptive logic dominates
         let SILENCE_CHUNKS_NEEDED = 6; // ~1.5 s silence to end segment
+
+        // ── Adaptive VAD multiplier calculation ──────────────────────────────
+        // Returns onset/offset multipliers that scale with the background noise level.
+        // Quiet environment (low noiseFloor) → lower mult → higher sensitivity.
+        // Noisy environment (high noiseFloor) → higher mult → fewer false positives.
+        //   - 3.0 / 6.0: minimum / maximum onset multiplier clamp
+        //   - 4.0: base multiplier at the reference noise level
+        //   - 0.015: reference noise floor level at which mult equals 4.0
+        //   - 0.005: noise floor safety minimum to prevent division-by-zero
+        //   - 0.55: offset multiplier as a fraction of the onset multiplier
+        function computeAdaptiveMults(floor) {
+            const onsetMult  = Math.max(3.0, Math.min(6.0, 4.0 * (0.015 / Math.max(floor, 0.005))));
+            const offsetMult = onsetMult * 0.55;
+            return { onsetMult, offsetMult };
+        }
 
         // ── Persist VAD settings ──────────────────────────────────────────────
         function saveVadSettings() {
@@ -400,7 +418,8 @@
             if (m && [...modelSelect.options].some(o => o.value === m)) {
                 modelSelect.value = m;
             }
-            // apply loaded values
+            // apply loaded values – MANUAL_FLOOR is kept low (0.005) so adaptive logic dominates;
+            // the slider acts as an advanced override, not the primary threshold.
             MANUAL_FLOOR          = threshSlider.value / 1000;
             SILENCE_CHUNKS_NEEDED = parseInt(silenceSlider.value);
             threshVal.textContent  = MANUAL_FLOOR.toFixed(3);
@@ -467,12 +486,14 @@
             vadCanvasCtx.fillStyle = '#0d1117';
             vadCanvasCtx.fillRect(0, 0, w, h);
 
-            const onsetT  = Math.max(MANUAL_FLOOR, noiseFloor * ONSET_MULT);
-            const offsetT = Math.max(MANUAL_FLOOR * 0.6, noiseFloor * OFFSET_MULT);
+            // Adaptive onset/offset multipliers (same logic as onAudioChunk)
+            const { onsetMult: _canvasOnsetMult, offsetMult: _canvasOffsetMult } = computeAdaptiveMults(noiseFloor);
+            const onsetT  = Math.max(MANUAL_FLOOR, noiseFloor * _canvasOnsetMult);
+            const offsetT = Math.max(MANUAL_FLOOR * 0.6, noiseFloor * _canvasOffsetMult);
             const barW = w / VAD_HIST_LEN;
 
             for (let i = 0; i < vadLevels.length; i++) {
-                const bh = Math.max(0, Math.min(vadLevels[i] / VAD_SCALE, 1)) * h;
+                const bh = Math.max(0, Math.min(vadLevels[i] / vadScale, 1)) * h;
                 vadCanvasCtx.fillStyle = vadLevels[i] >= onsetT ? '#22c55e' : '#3b82f6';
                 vadCanvasCtx.fillRect(i * barW, h - bh, Math.max(1, barW - 1), bh);
             }
@@ -940,8 +961,8 @@
             rmsIn = Math.sqrt(rmsIn / audio.length);
             let normalizedAudio = audio;
             if (rmsIn > 0.001) {
-                const targetRms = 0.1;
-                const scale = Math.min(targetRms / rmsIn, 8); // cap 8× gain
+                const targetRms = 0.15;
+                const scale = Math.min(targetRms / rmsIn, 6); // cap 6× gain (over-amplification prevention)
                 normalizedAudio = new Float32Array(audio.length);
                 for (let i = 0; i < audio.length; i++) {
                     normalizedAudio[i] = Math.max(-1, Math.min(1, audio[i] * scale));
@@ -1026,12 +1047,16 @@
             }
 
             // Auto gain: lift quiet speech automatically, keep stable with smoothing.
+            // Only update gain when NOT speaking to prevent gain drift during speech,
+            // which would destabilise the audio fed to Whisper.
             const rawLevel = rms(samples);
-            const desiredGain = Math.max(
-                AGC_MIN_GAIN,
-                Math.min(AGC_MAX_GAIN, AGC_TARGET_RMS / Math.max(rawLevel, 0.002))
-            );
-            autoGain = autoGain * (1 - AGC_ALPHA) + desiredGain * AGC_ALPHA;
+            if (!inSpeech) {
+                const desiredGain = Math.max(
+                    AGC_MIN_GAIN,
+                    Math.min(AGC_MAX_GAIN, AGC_TARGET_RMS / Math.max(rawLevel, 0.002))
+                );
+                autoGain = autoGain * (1 - AGC_ALPHA) + desiredGain * AGC_ALPHA;
+            }
             if (autoGain !== 1.0) {
                 const boosted = new Float32Array(samples.length);
                 for (let i = 0; i < samples.length; i++) {
@@ -1049,8 +1074,12 @@
             const pct = Math.min(100, smoothedRms / 0.08 * 100);
             volFill.style.width = pct + '%';
 
-            const onsetThresh  = Math.max(MANUAL_FLOOR, noiseFloor * ONSET_MULT);
-            const offsetThresh = Math.max(MANUAL_FLOOR * 0.6, noiseFloor * OFFSET_MULT);
+            // Adaptive onset/offset multipliers: quiet environment → lower mult (higher sensitivity);
+            // noisy environment → higher mult (reduces false positives).
+            const { onsetMult: effectiveOnsetMult, offsetMult: effectiveOffsetMult } = computeAdaptiveMults(noiseFloor);
+
+            const onsetThresh  = Math.max(MANUAL_FLOOR, noiseFloor * effectiveOnsetMult);
+            const offsetThresh = Math.max(MANUAL_FLOOR * 0.6, noiseFloor * effectiveOffsetMult);
 
             // Adaptive noise floor: only update when signal is clearly background
             // (level below onset threshold) and not in speech — prevents speech audio
@@ -1064,6 +1093,17 @@
 
             volFill.className = 'vol-fill' + (level > onsetThresh ? ' active' : '');
 
+            // Warmup: let noiseFloor calibrate before attempting speech detection
+            if (warmupCount < WARMUP_CHUNKS) {
+                warmupCount++;
+                setStatus('🎙️ キャリブレーション中…', 'listening');
+                // VAD canvas
+                vadLevels.push(level);
+                if (vadLevels.length > VAD_HIST_LEN) vadLevels.shift();
+                drawVadCanvas();
+                return;
+            }
+
             // VAD canvas
             vadLevels.push(level);
             if (vadLevels.length > VAD_HIST_LEN) vadLevels.shift();
@@ -1071,7 +1111,7 @@
 
             // Live VAD debug display (visible when settings panel is open)
             vadDebug.textContent =
-                `floor:${noiseFloor.toFixed(4)}  onset:${onsetThresh.toFixed(4)}  offset:${offsetThresh.toFixed(4)}  now:${level.toFixed(4)}  agc:${autoGain.toFixed(2)}x`;
+                `floor:${noiseFloor.toFixed(4)}  onset:${onsetThresh.toFixed(4)}(×${effectiveOnsetMult.toFixed(1)})  offset:${offsetThresh.toFixed(4)}  now:${level.toFixed(4)}  agc:${autoGain.toFixed(2)}x`;
 
             // ── 連続録音モード (ラジオ): VAD閾値を無視してすべて録音し30秒ごとにフラッシュ ──
             if (isRadioPlaying) {
@@ -1157,7 +1197,8 @@
             // Trim trailing silence so Whisper receives clean audio
             // (skip in radio continuous mode — fixed 30s windows need no trim)
             if (!isRadioPlaying) {
-                const trimThresh = Math.max(MANUAL_FLOOR * 0.6, noiseFloor * OFFSET_MULT);
+                const { offsetMult: _trimOffsetMult } = computeAdaptiveMults(noiseFloor);
+                const trimThresh = Math.max(MANUAL_FLOOR * 0.6, noiseFloor * _trimOffsetMult);
                 while (seg.length > MIN_SPEECH_CHUNKS && rms(seg[seg.length - 1]) < trimThresh) {
                     seg.pop();
                 }
@@ -1262,9 +1303,10 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                 onsetCount = 0;
                 smoothedRms = 0; noiseFloor = MANUAL_FLOOR;
                 autoGain = 1.0;
+                warmupCount = 0;
                 isListening = true;
 
-                setStatus('Listening…', 'listening');
+                setStatus('🎙️ キャリブレーション中…', 'listening');
                 recordBtn.textContent = '⏹️ Stop listening';
                 recordBtn.classList.add('active');
                 modelSelect.disabled = true;
@@ -1300,7 +1342,10 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
             if (workletNode) { workletNode.disconnect(); workletNode = null; }
             if (scriptNode)  { scriptNode.disconnect(); scriptNode = null; }
             if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
-            if (audioCtx)    { audioCtx.close().catch(() => {}); audioCtx = null; }
+            // Suspend rather than close so the AudioContext can be re-used on the
+            // next startListening() call — closing and re-creating it causes failures
+            // on iOS for the second and subsequent recordings.
+            if (audioCtx)    { audioCtx.suspend().catch(() => {}); }
 
             recordBtn.textContent = '🎙️ Start listening';
             recordBtn.classList.remove('active');
@@ -1400,7 +1445,8 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                 // Feed audio into VAD in CHUNK_SIZE pieces with a small delay
                 // so the event loop can process transcriptions between chunks.
                 // We use 4× real-time speed (delay = CHUNK_MS/4).
-                noiseFloor = 0.010; // reset noise floor for simulated stream
+                noiseFloor = MANUAL_FLOOR; // reset noise floor for simulated stream
+                warmupCount = WARMUP_CHUNKS; // bypass warmup for file simulation
                 const totalChunks = Math.ceil(ch0.length / CHUNK_SIZE);
                 for (let i = 0; i < totalChunks; i++) {
                     const start = i * CHUNK_SIZE;
