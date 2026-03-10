@@ -906,9 +906,14 @@
 
             const t0 = Date.now();
             try {
+                // chunk_length_s: split audio into shorter segments internally.
+                // Helps whisper-base: 30s monolithic decode often gives empty output
+                // for broadcast radio, but per-chunk no_speech detection is more reliable.
                 const res = await transcriber(normalizedAudio, {
                     language: selectedLang,
                     task: 'transcribe',
+                    chunk_length_s: 15,
+                    stride_length_s: 3,
                 });
                 const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
                 const text = (res.text || '').trim();
@@ -995,13 +1000,13 @@
                     silenceCount = 0;
                     speechBuf = [];
                     startRecTimer();
-                    addLog(`🎙️ 連続録音開始 (${ctxRate}Hz→16kHz, 30s窓)`);
+                    addLog(`🎙️ 連続録音開始 (${ctxRate}Hz→16kHz, 15s窓)`);
                 }
                 speechBuf.push(samples.slice());
                 updateStatusDisplay();
-                // Flush at 30s regardless of silence (use actual context rate)
+                // Flush at 15s regardless of silence (use actual context rate)
                 const effectiveRate = ctxRate;
-                const maxChunks = Math.round(30 * effectiveRate / CHUNK_SIZE);
+                const maxChunks = Math.round(15 * effectiveRate / CHUNK_SIZE);
                 if (speechBuf.length >= maxChunks) {
                     endSpeechSegment();
                     if (isRadioPlaying) {
@@ -1503,6 +1508,17 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                         decodeFailCount++;
                         if (decodeFailCount <= 5 || decodeFailCount % 20 === 0)
                             addLog(`⚠️ デコード失敗 #${decodeOk + decodeFailCount} (${DECODE_BYTES}B@sync): ${e.message}`);
+                        // Rescue bytes after the second sync word to avoid ~9s audio gap
+                        const nextSync = findMp3Sync(slice, 4);
+                        if (nextSync > 0) {
+                            const rescued = slice.slice(nextSync);
+                            const newBuf = new Uint8Array(rescued.length + rawBuf.length);
+                            newBuf.set(rescued);
+                            newBuf.set(rawBuf, rescued.length);
+                            rawBuf = newBuf;
+                            if (decodeFailCount <= 5 || decodeFailCount % 20 === 0)
+                                addLog(`♻️ ${rescued.length}B救済 (sync@${nextSync})`);
+                        }
                     }
                 }
             } catch (e) {
@@ -1549,7 +1565,7 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                 radioTestBtn.textContent = '⏹ 停止';
                 radioTestBtn.style.background = 'var(--accent)';
                 radioTestBtn.style.color = '#fff';
-                radioStatus.textContent = '連続録音モード — 30秒ごとにWhisperへ送信';
+                radioStatus.textContent = '連続録音モード — 15秒ごとにWhisperへ送信';
                 volWrap.classList.add('visible');
                 recordBtn.disabled = true;
 
