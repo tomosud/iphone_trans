@@ -202,6 +202,25 @@
                         <label>無音カットoff <span id="silenceVal">1.5</span>s</label>
                         <input type="range" id="silenceSlider" min="2" max="40" value="6">
                     </div>
+                    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:6px;">
+                        <div>
+                            <label>グラフスケール
+                                <select id="vadScaleSel" style="margin-left:4px;font-size:0.8rem;">
+                                    <option value="0">Auto</option>
+                                    <option value="0.005">0.005</option>
+                                    <option value="0.010">0.010</option>
+                                    <option value="0.020">0.020</option>
+                                    <option value="0.050">0.050</option>
+                                    <option value="0.100" selected>0.100</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div>
+                            <label>入力ゲイン <span id="gainVal">1.0</span>×
+                                <input type="range" id="gainSlider" min="10" max="100" value="10" style="width:100px;vertical-align:middle;">
+                            </label>
+                        </div>
+                    </div>
                     <canvas id="vadCanvas" style="width:100%;height:80px;display:block;border-radius:6px;margin-top:10px;background:#0d1117;"></canvas>
                     <div style="display:flex;gap:10px;font-size:0.7rem;margin-top:3px;font-family:monospace;flex-wrap:wrap;color:var(--muted);">
                         <span style="color:#ef4444;">▬ onset</span>
@@ -397,12 +416,27 @@
         langSelect.addEventListener('change', saveVadSettings);
         modelSelect.addEventListener('change', saveVadSettings);
 
+        // ── Graph scale + input gain controls ─────────────────────────────────
+        let inputGain = 1.0;
+        const vadScaleSel = document.getElementById('vadScaleSel');
+        const gainSlider  = document.getElementById('gainSlider');
+        const gainVal     = document.getElementById('gainVal');
+        vadScaleSel.addEventListener('change', () => {
+            vadScaleFixed = parseFloat(vadScaleSel.value);
+            drawVadCanvas();
+        });
+        gainSlider.addEventListener('input', () => {
+            inputGain = gainSlider.value / 10;
+            gainVal.textContent = inputGain.toFixed(1);
+        });
+
         // ── VAD canvas visualization ──────────────────────────────────────────
         const vadCanvas    = document.getElementById('vadCanvas');
         const vadCanvasCtx = vadCanvas ? vadCanvas.getContext('2d') : null;
         const VAD_HIST_LEN = 160;
-        const VAD_SCALE    = 0.10; // full height = RMS 0.10
-        const vadLevels    = new Array(VAD_HIST_LEN).fill(0);
+        let   vadScaleFixed = 0;   // 0 = auto-fit
+        let   vadScale      = 0.10;
+        const vadLevels     = new Array(VAD_HIST_LEN).fill(0);
 
         function drawVadCanvas() {
             if (!vadCanvasCtx || !vadCanvas) return;
@@ -414,7 +448,14 @@
                 vadCanvas.height = Math.round(cssH * dpr);
             }
             const w = vadCanvas.width, h = vadCanvas.height;
-            function yOf(v) { return h - Math.max(0, Math.min(v / VAD_SCALE, 1)) * h; }
+            // Auto-fit: scale to max of recent levels (with headroom) when not fixed
+            if (vadScaleFixed === 0) {
+                const maxLv = Math.max(...vadLevels, 0.005);
+                vadScale = maxLv * 1.25;
+            } else {
+                vadScale = vadScaleFixed;
+            }
+            function yOf(v) { return h - Math.max(0, Math.min(v / vadScale, 1)) * h; }
 
             vadCanvasCtx.fillStyle = '#0d1117';
             vadCanvasCtx.fillRect(0, 0, w, h);
@@ -465,6 +506,12 @@
             const fy = yOf(MANUAL_FLOOR);
             vadCanvasCtx.fillStyle = '#22d3ee';
             vadCanvasCtx.fillText(floorLabel, w - lw - 4 * dpr, Math.max(10 * dpr, fy - 3 * dpr));
+
+            // Scale indicator (top-right)
+            const scaleLabel = `scale ${vadScale.toFixed(3)}${vadScaleFixed === 0 ? ' (auto)' : ''}`;
+            const slw = vadCanvasCtx.measureText(scaleLabel).width;
+            vadCanvasCtx.fillStyle = '#888';
+            vadCanvasCtx.fillText(scaleLabel, w - slw - 4 * dpr, 9 * dpr);
         }
 
         // ── Debug log ─────────────────────────────────────────────────────────
@@ -958,9 +1005,16 @@
             // Resample to 16kHz only for microphone input (audioCtx may run at 44100Hz on iOS).
             // Radio fetch chunks are pre-downsampled to 16kHz in captureRadioStream, skip here.
             const ctxRate = (audioCtx && audioCtx.sampleRate) || SAMPLE_RATE;
-            const samples = ctxRate !== SAMPLE_RATE
+            let samples = ctxRate !== SAMPLE_RATE
                 ? downsample(rawSamples, ctxRate)
                 : rawSamples;
+            // Apply input gain (amplify before VAD + Whisper; clamp to [-1, 1])
+            if (inputGain !== 1.0) {
+                const gained = new Float32Array(samples.length);
+                for (let i = 0; i < samples.length; i++)
+                    gained[i] = Math.max(-1, Math.min(1, samples[i] * inputGain));
+                samples = gained;
+            }
 
             // update pre-roll ring buffer
             preRoll.push(samples.slice());
