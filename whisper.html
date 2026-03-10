@@ -1357,12 +1357,9 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                                 mono = new Float32Array(ch0.length);
                                 for (let i = 0; i < ch0.length; i++) mono[i] = (ch0[i] + ch1[i]) * 0.5;
                             }
-                            // Resample if needed
-                            const pcm = decoded.sampleRate !== SAMPLE_RATE
-                                ? downsample(mono, decoded.sampleRate, SAMPLE_RATE)
-                                : mono;
-                            for (let i = 0; i + CHUNK_SIZE <= pcm.length; i += CHUNK_SIZE) {
-                                pcmQueue.push(pcm.slice(i, i + CHUNK_SIZE));
+                            // Queue native-rate chunks; onAudioChunk will downsample to 16kHz
+                            for (let i = 0; i + CHUNK_SIZE <= mono.length; i += CHUNK_SIZE) {
+                                pcmQueue.push(mono.slice(i, i + CHUNK_SIZE));
                             }
                             if (pcmQueue.length > 0) {
                                 radioStatus.textContent = `受信中: ${radioStreamSel.options[radioStreamSel.selectedIndex].text}`;
@@ -1396,9 +1393,8 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                 radioCtx = new (window.AudioContext || window.webkitAudioContext)(); // native rate; downsample in onAudioChunk
                 await radioCtx.resume();
 
-                // crossOrigin='anonymous' required for createMediaElementSource (CORS)
+                // Audio element for audible playback only (no crossOrigin needed for playback)
                 radioAudio = new Audio();
-                radioAudio.crossOrigin = 'anonymous';
                 radioAudio.src = streamUrl;
                 radioAudio.volume = 0.6;
 
@@ -1408,7 +1404,7 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                 isListening = true;
                 isRadioPlaying = true;
 
-                await radioAudio.play();
+                radioAudio.play().catch(() => {});
                 CHUNK_MS = CHUNK_SIZE / radioCtx.sampleRate * 1000;
                 addLog(`🔊 RadioCtx: ${radioCtx.sampleRate}Hz, CHUNK_MS=${CHUNK_MS.toFixed(1)}ms`);
 
@@ -1420,39 +1416,8 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                 volWrap.classList.add('visible');
                 recordBtn.disabled = true;
 
-                // Tap PCM from the playing audio element via Web Audio API
-                const mediaSource = radioCtx.createMediaElementSource(radioAudio);
-                mediaSource.connect(radioCtx.destination); // keep audio audible
-
-                let tapped = false;
-                if (radioCtx.audioWorklet) {
-                    try {
-                        const blobUrl = buildWorkletBlob(CHUNK_SIZE);
-                        await radioCtx.audioWorklet.addModule(blobUrl);
-                        URL.revokeObjectURL(blobUrl);
-                        radioWorkletNode = new AudioWorkletNode(radioCtx, 'chunk-processor');
-                        radioWorkletNode.port.onmessage = (e) => {
-                            if (isRadioPlaying) onAudioChunk(e.data);
-                        };
-                        mediaSource.connect(radioWorkletNode);
-                        tapped = true;
-                        addLog('✅ AudioWorklet でPCMキャプチャ開始 (連続録音モード)');
-                    } catch (e) {
-                        addLog(`⚠️ AudioWorklet失敗 (${e.message}) → ScriptProcessorへフォールバック`);
-                    }
-                }
-                if (!tapped) {
-                    radioScriptNode = radioCtx.createScriptProcessor(CHUNK_SIZE, 1, 1);
-                    radioScriptNode.onaudioprocess = (e) => {
-                        if (isRadioPlaying) onAudioChunk(e.inputBuffer.getChannelData(0).slice());
-                    };
-                    mediaSource.connect(radioScriptNode);
-                    radioScriptNode.connect(radioCtx.destination);
-                    addLog('✅ ScriptProcessor でPCMキャプチャ開始 (連続録音モード)');
-                }
-
-                // Hold until user stops
-                await new Promise(resolve => { radioStopResolve = resolve; });
+                // Fetch-based PCM capture: native-rate chunks, onAudioChunk downsamples to 16kHz
+                await captureRadioStream(streamUrl, radioCtx);
 
             } catch (err) {
                 addLog(`❌ ラジオ接続失敗: ${err.message}`);
