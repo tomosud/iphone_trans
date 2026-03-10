@@ -179,8 +179,7 @@
                     <div class="controls">
                         <button class="btn-record" id="recordBtn" disabled>🎙️ Start listening</button>
                         <button class="btn-send" id="sendBtn" disabled>送信</button>
-                        <!-- <button id="sampleBtn" style="font-size:0.8rem;padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;color:var(--fg);" disabled title="JFK speech sample (11s) — direct to Whisper">▶ Sample</button> -->
-                        <!-- <button id="sampleLongBtn" style="font-size:0.8rem;padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;color:var(--fg);" disabled title="JFK ×5 (57s) — through VAD pipeline to test segmentation">▶ Long</button> -->
+                        <button id="sampleLongBtn" style="font-size:0.8rem;padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;color:var(--fg);" disabled title="JFK ×5 (57s) — VADセグメントテスト">▶ VADテスト</button>
                     </div>
                     <button id="clearBtn" class="clear-button" type="button">Clear</button>
                 </div>
@@ -294,21 +293,23 @@
         const SAMPLE_RATE       = 16000;
         const CHUNK_SIZE        = 4096;          // samples per worklet callback (native rate)
         let   CHUNK_MS          = CHUNK_SIZE / SAMPLE_RATE * 1000; // updated after AudioContext starts
-        const PRE_ROLL_CHUNKS   = 8;             // ~2s pre-roll (was 6) — capture word starts better
+        const PRE_ROLL_CHUNKS   = 8;             // ~2s pre-roll
         const MIN_SPEECH_CHUNKS = 2;             // ignore clips shorter than ~2 chunks
-        const MAX_SPEECH_CHUNKS = Math.round(25 * SAMPLE_RATE / CHUNK_SIZE); // 25s auto-flush
-        const ONSET_CHUNKS_NEEDED = 2;           // require 2 consecutive hits to reduce over-segmentation
-        const KEEP_TRAILING_CHUNKS = 6;          // keep ~1.4s tail (was 2) — prevent cutting sentence endings
+        // Updated dynamically in startListening() to match actual AudioContext rate.
+        // Target: ~6 s of real audio. On iOS 44100 Hz → ~65 chunks; on 16 kHz → ~23 chunks.
+        let MAX_SPEECH_CHUNKS = Math.round(6 * SAMPLE_RATE / CHUNK_SIZE);
+        const ONSET_CHUNKS_NEEDED = 1;           // single chunk sufficient — avoids missing soft onset
+        const KEEP_TRAILING_CHUNKS = 6;          // keep ~560 ms tail — prevent cutting sentence endings
 
         // Adaptive VAD: noise floor tracks background RMS; onset/offset use multipliers
         const NOISE_ALPHA   = 0.006;   // noise floor adaptation speed (faster post-speech readaptation)
         // ONSET_MULT / OFFSET_MULT are now computed dynamically per chunk (effectiveOnsetMult / effectiveOffsetMult)
 
         // Auto gain control for quiet speech (after manual gain, before VAD/Whisper)
-        const AGC_TARGET_RMS = 0.030;
+        const AGC_TARGET_RMS = 0.020;  // target RMS after gain (was 0.030 — too high, raised gain needed)
         const AGC_MIN_GAIN   = 1.0;
-        const AGC_MAX_GAIN   = 2.0;    // conservative cap to avoid over-amplification
-        const AGC_ALPHA      = 0.03;   // slower tracking for smoother gain (was 0.06)
+        const AGC_MAX_GAIN   = 8.0;    // allow up to 8× boost for distant/quiet mics (was 2.0)
+        const AGC_ALPHA      = 0.05;   // slightly faster gain tracking
 
         // Warmup: suppress speech detection for the first N chunks after startListening()
         const WARMUP_CHUNKS = 8; // ~2s calibration (4096/16000 × 8 ≈ 2s); reduced from 20 to avoid long wait before first detection
@@ -317,22 +318,21 @@
         let MANUAL_FLOOR      = 0.005; // hard minimum floor – kept low so adaptive logic dominates
         // iOS Safari runs AudioContext at 44100 Hz (ignores the 16000 Hz hint), so
         // CHUNK_MS ≈ 4096/44100*1000 ≈ 93 ms per chunk, not 256 ms.
-        // Old value of 8 → only ~740 ms — far too short for natural speech pauses.
-        // New value of 14 → ~1.3 s on iOS (44100 Hz) or ~3.6 s on 16 kHz devices.
-        let SILENCE_CHUNKS_NEEDED = 14;
+        // 10 chunks → ~930 ms on iOS 44100 Hz, ~2.6 s on 16 kHz.
+        // Shorter than the previous 14 so segments are sent more quickly after speech ends.
+        let SILENCE_CHUNKS_NEEDED = 10;
 
         // ── Adaptive VAD multiplier calculation ──────────────────────────────
         // Returns onset/offset multipliers that scale with the background noise level.
-        // Quiet environment (low noiseFloor) → lower mult → higher sensitivity.
-        // Noisy environment (high noiseFloor) → higher mult → fewer false positives.
-        //   - 3.0 / 6.0: minimum / maximum onset multiplier clamp
-        //   - 4.0: base multiplier at the reference noise level
-        //   - 0.015: reference noise floor level at which mult equals 4.0
-        //   - 0.005: noise floor safety minimum to prevent division-by-zero
-        //   - 0.55: offset multiplier as a fraction of the onset multiplier
+        // Lowered range (was 3.0–6.0) so the onset threshold is more easily reached:
+        //   floor=0.005 → onsetMult=2.5, onsetThresh=0.0125
+        //   floor=0.010 → onsetMult=2.25, onsetThresh=0.0225
+        //   floor=0.020 → onsetMult=1.8,  onsetThresh=0.036
+        // With AGC_MAX_GAIN=8, a very quiet mic (raw RMS≈0.003) is boosted to ~0.020,
+        // which clears the 0.0125 threshold comfortably.
         function computeAdaptiveMults(floor) {
-            const onsetMult  = Math.max(3.0, Math.min(6.0, 4.0 * (0.015 / Math.max(floor, 0.005))));
-            const offsetMult = onsetMult * 0.55;
+            const onsetMult  = Math.max(1.8, Math.min(2.5, 1.5 * (0.015 / Math.max(floor, 0.005))));
+            const offsetMult = onsetMult * 0.65;
             return { onsetMult, offsetMult };
         }
 
@@ -839,8 +839,7 @@
                 });
                 setStatus('Ready — tap Start to listen', 'listening');
                 recordBtn.disabled = false;
-                // sampleBtn.disabled = false;
-                // sampleLongBtn.disabled = false;
+                document.getElementById('sampleLongBtn').disabled = false;
                 setTimeout(() => progressBar.classList.remove('visible'), 800);
             } catch (err) {
                 console.error(err);
@@ -1019,9 +1018,14 @@
             if (vadLevels.length > VAD_HIST_LEN) vadLevels.shift();
             drawVadCanvas();
 
-            // Live VAD debug display (visible when settings panel is open)
+            // Live VAD debug — shows level as % of onset threshold so it's clear
+            // why speech is / is not being detected.
+            const pct = (level / onsetThresh * 100).toFixed(0);
+            const bar = '█'.repeat(Math.min(20, Math.round(level / onsetThresh * 10))) +
+                        '░'.repeat(Math.max(0, 10 - Math.round(level / onsetThresh * 10)));
+            const stateLabel = inSpeech ? '🔴REC' : warmupCount < WARMUP_CHUNKS ? '⏳CAL' : '👂WAI';
             vadDebug.textContent =
-                `floor:${noiseFloor.toFixed(4)}  onset:${onsetThresh.toFixed(4)}(×${effectiveOnsetMult.toFixed(1)})  offset:${offsetThresh.toFixed(4)}  now:${level.toFixed(4)}  agc:${autoGain.toFixed(2)}x`;
+                `${stateLabel} ${bar} ${pct}%→onset  now:${level.toFixed(4)} onset:${onsetThresh.toFixed(4)}(×${effectiveOnsetMult.toFixed(1)}) floor:${noiseFloor.toFixed(4)} agc:${autoGain.toFixed(2)}x`;
 
             // ── 連続録音モード (ラジオ): VAD閾値を無視してすべて録音し30秒ごとにフラッシュ ──
             if (isRadioPlaying) {
@@ -1050,28 +1054,18 @@
                 return;
             }
 
+            // ── Continuous recording: always record, segment on silence only ──────
+            // Onset detection was discarding the beginning of quiet/delayed speech.
+            // Instead, record everything after warmup and let silence end a segment.
             if (!inSpeech) {
-                if (level > onsetThresh) {
-                    onsetCount++;
-                    if (onsetCount >= ONSET_CHUNKS_NEEDED) {
-                        inSpeech = true;
-                        onsetCount = 0;
-                        silenceCount = 0;
-                        speechBuf = [...preRoll];
-                        startRecTimer();
-                        addLog(`🎙️ 発話開始: level=${level.toFixed(4)} onset=${onsetThresh.toFixed(4)} floor=${noiseFloor.toFixed(4)} agc=${autoGain.toFixed(2)}x`);
-                    }
-                } else if (isListening) {
-                    onsetCount = 0;
-                    // Periodic "why not detecting" log every 3s
-                    const now = Date.now();
-                    if (now - _lastNonDetectLog > 3000) {
-                        _lastNonDetectLog = now;
-                        const ratio = (level / onsetThresh * 100).toFixed(0);
-                        addLog(`👂 待機中: level=${level.toFixed(4)} onset=${onsetThresh.toFixed(4)} (${ratio}%) floor=${noiseFloor.toFixed(4)}${isProcessing ? ' [Whisper処理中]' : ''}`);
-                    }
-                }
-            } else {
+                inSpeech = true;
+                onsetCount = 0;
+                silenceCount = 0;
+                speechBuf = [...preRoll];
+                startRecTimer();
+                addLog(`🎙️ 録音開始 (連続): floor=${noiseFloor.toFixed(4)} agc=${autoGain.toFixed(2)}x`);
+            }
+            {
                 speechBuf.push(samples.slice());
 
                 // Auto-flush before hitting Whisper's 30s context limit
@@ -1116,11 +1110,18 @@
             const trimSec = seg.reduce((a, c) => a + c.length, 0) / SAMPLE_RATE;
 
             if (seg.length >= MIN_SPEECH_CHUNKS) {
-                addLog(`🔴 発話終了: 生${rawSec.toFixed(2)}s → トリム後${trimSec.toFixed(2)}s → Whisper送信`);
+                addLog(`🔴 セグメント送信: 生${rawSec.toFixed(2)}s → トリム後${trimSec.toFixed(2)}s → Whisper`);
                 transcribeSegment(seg);
             } else {
-                addLog(`🔕 発話終了: ${rawSec.toFixed(2)}s → 短すぎ (${seg.length}チャンク < ${MIN_SPEECH_CHUNKS}) → 破棄`);
-                if (isListening) setStatus('Listening…', 'listening');
+                addLog(`🔕 セグメント破棄: ${rawSec.toFixed(2)}s → 短すぎ (${seg.length}チャンク < ${MIN_SPEECH_CHUNKS})`);
+            }
+            // Immediately restart recording (continuous mode) — do not wait for
+            // the next onset; silence-based segmentation handles all splitting.
+            if (isListening && !isRadioPlaying) {
+                inSpeech = true;
+                silenceCount = 0;
+                speechBuf = [];
+                startRecTimer();
             }
         }
 
@@ -1162,7 +1163,11 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                 // Log and adjust for actual sample rate (iOS may ignore sampleRate:16000 hint)
                 const actualRate = audioCtx.sampleRate;
                 CHUNK_MS = CHUNK_SIZE / actualRate * 1000;
-                addLog(`🔊 AudioContext: ${actualRate}Hz (target 16000Hz)${actualRate !== SAMPLE_RATE ? ' ⚠️ リサンプリングします' : ' ✅'}`);
+                // Recalculate MAX_SPEECH_CHUNKS based on the real context rate so that
+                // the auto-flush fires at ~6 s of real audio regardless of device rate.
+                // (e.g. iOS 44100 Hz → 65 chunks×93ms≈6s; 16kHz → 23 chunks×256ms≈6s)
+                MAX_SPEECH_CHUNKS = Math.round(6 * actualRate / CHUNK_SIZE);
+                addLog(`🔊 AudioContext: ${actualRate}Hz (target 16000Hz)${actualRate !== SAMPLE_RATE ? ' ⚠️ リサンプリングします' : ' ✅'}  MAX_SPEECH=${MAX_SPEECH_CHUNKS}chunks≈6s`);
 
                 // Disable browser DSP for lecture recording: echo cancellation
                 // treats far-field speaker audio as "echo" and cancels it.
@@ -1307,90 +1312,51 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
 
         clearBtn.addEventListener('click', () => void clearAll());
 
-        /* // ── Sample audio test ─────────────────────────────────────────────────
-        // JFK "Ask not what your country can do for you" (~11s, 16kHz mono WAV)
-        sampleBtn.addEventListener('click', async () => {
-            if (!transcriber) { addLog('⚠️ モデル未ロード'); return; }
-            sampleBtn.disabled = true;
-            addLog('📂 sample_en.wav を読み込み中…');
-            try {
-                const resp = await fetch('sample_en.wav?t=' + Date.now());
-                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-                const arrayBuf = await resp.arrayBuffer();
-
-                // Decode via a temporary AudioContext resampled to 16kHz
-                const decCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
-                const decoded = await decCtx.decodeAudioData(arrayBuf);
-                decCtx.close();
-
-                // Mix to mono Float32Array
-                const ch0 = decoded.getChannelData(0);
-                let audio;
-                if (decoded.numberOfChannels === 1) {
-                    audio = ch0.slice();
-                } else {
-                    const ch1 = decoded.getChannelData(1);
-                    audio = new Float32Array(ch0.length);
-                    for (let i = 0; i < ch0.length; i++) audio[i] = (ch0[i] + ch1[i]) / 2;
-                }
-
-                addLog(`✅ 読み込み完了: ${(audio.length / SAMPLE_RATE).toFixed(2)}s — Whisperへ送信`);
-                // Call _runTranscribe directly (bypass MIN_SPEECH_CHUNKS guard)
-                _runTranscribe([audio]);
-            } catch (e) {
-                addLog(`❌ サンプル読み込み失敗: ${e.message}`);
-                console.error(e);
-            } finally {
-                sampleBtn.disabled = false;
-            }
-        });
-
-        // ── Long sample: feed through VAD pipeline to test segmentation ────────
-        // JFK ×5 with 0.5s silence between each repeat (~57s total)
+        // ── VAD segmentation test: feed sample_en_long.wav through the full pipeline ──
+        // JFK speech ×5 with 0.5s silence between repeats (~57s total).
+        // Lets you verify silence-based segmentation without a real microphone.
+        const sampleLongBtn = document.getElementById('sampleLongBtn');
         sampleLongBtn.addEventListener('click', async () => {
             if (!transcriber) { addLog('⚠️ モデル未ロード'); return; }
-            if (isListening) { addLog('⚠️ 録音中は使用不可'); return; }
+            if (isListening)  { addLog('⚠️ 録音中は使用不可 — 先に停止してください'); return; }
             sampleLongBtn.disabled = true;
-            sampleLongBtn.textContent = '⏳ Long';
+            sampleLongBtn.textContent = '⏳ テスト中…';
             addLog('📂 sample_en_long.wav を読み込み中…');
             try {
                 const resp = await fetch('sample_en_long.wav?t=' + Date.now());
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 const arrayBuf = await resp.arrayBuffer();
 
-                // Decode at 16kHz
                 const decCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
                 const decoded = await decCtx.decodeAudioData(arrayBuf);
                 decCtx.close();
 
                 const ch0 = decoded.getChannelData(0);
-                const dur = (ch0.length / SAMPLE_RATE).toFixed(1);
-                addLog(`✅ 読み込み完了: ${dur}s — VADパイプラインへ送信 (実時間より速く再生)`);
+                addLog(`✅ 読み込み完了: ${(ch0.length / SAMPLE_RATE).toFixed(1)}s — VADパイプラインへ投入`);
 
-                // Feed audio into VAD in CHUNK_SIZE pieces with a small delay
-                // so the event loop can process transcriptions between chunks.
-                // We use 4× real-time speed (delay = CHUNK_MS/4).
-                noiseFloor = MANUAL_FLOOR; // reset noise floor for simulated stream
-                warmupCount = WARMUP_CHUNKS; // bypass warmup for file simulation
+                // Reset VAD for a clean simulation run
+                noiseFloor = MANUAL_FLOOR;
+                warmupCount = WARMUP_CHUNKS; // bypass warmup — file starts immediately
+                inSpeech = false; silenceCount = 0; speechBuf = []; preRoll = [];
+                isListening = true; // needed for endSpeechSegment restart logic
+
                 const totalChunks = Math.ceil(ch0.length / CHUNK_SIZE);
                 for (let i = 0; i < totalChunks; i++) {
-                    const start = i * CHUNK_SIZE;
-                    const chunk = ch0.slice(start, start + CHUNK_SIZE);
+                    const chunk = ch0.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
                     onAudioChunk(chunk);
-                    // Yield every 8 chunks to keep UI responsive
                     if (i % 8 === 7) await new Promise(r => setTimeout(r, 0));
                 }
-                // Flush any remaining speech
                 if (inSpeech) endSpeechSegment();
-                addLog(`📤 全チャンク送信完了 (${totalChunks}チャンク)`);
+                isListening = false;
+                addLog(`📤 投入完了: ${totalChunks}チャンク`);
             } catch (e) {
-                addLog(`❌ ロング読み込み失敗: ${e.message}`);
-                console.error(e);
+                addLog(`❌ テスト失敗: ${e.message}`);
+                isListening = false;
             } finally {
                 sampleLongBtn.disabled = false;
-                sampleLongBtn.textContent = '▶ Long';
+                sampleLongBtn.textContent = '▶ VADテスト';
             }
-        }); */
+        });
 
         const savedLink = document.getElementById('savedLink');
         savedLink.addEventListener('click', async (e) => {
