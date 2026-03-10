@@ -529,32 +529,56 @@
                 audioClipsBadge.textContent = _audioClipsBadgeN > 9 ? '9+' : _audioClipsBadgeN;
                 audioClipsBadge.style.display = 'inline';
             }
+            // Persist to IndexedDB as WAV for playback across sessions
+            saveClipToDb(t, sec, pcmToWav(audio, SAMPLE_RATE)).catch(() => {});
         }
 
-        function renderAudioClips() {
+        async function renderAudioClips() {
             audioClipsList.innerHTML = '';
-            if (recentAudioClips.length === 0) {
-                audioClipsList.textContent = 'まだ音声なし';
-                return;
-            }
-            [...recentAudioClips].reverse().forEach((clip, i) => {
-                const idx = recentAudioClips.length - i;
+
+            // In-memory clips (current session)
+            const memClips = [...recentAudioClips].reverse().map((c, i) => ({
+                label: `#${recentAudioClips.length - i}  ${c.t}  ${c.sec.toFixed(2)}s  [mem]`,
+                playFn: btn => playAudioClip(c.audio, btn),
+            }));
+
+            // IndexedDB clips (persisted across sessions)
+            const dbClips = await loadClipsFromDb().then(rows =>
+                [...rows].reverse().map((c, i) => ({
+                    label: `#${rows.length - i}  ${c.t}  ${c.sec.toFixed(2)}s  [db]`,
+                    playFn: btn => playWavClip(c.wav, btn),
+                }))
+            );
+
+            // Merge: memory first (most recent), then db-only entries
+            const all = [...memClips, ...dbClips.filter(d => !memClips.some(m => m.label.startsWith(d.label.slice(0,12))))];
+
+            if (all.length === 0) { audioClipsList.textContent = 'まだ音声なし'; return; }
+            all.forEach(({ label, playFn }) => {
                 const row = document.createElement('div');
                 row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:5px;';
-
-                const label = document.createElement('span');
-                label.style.cssText = 'flex:1;color:var(--fg);';
-                label.textContent = `#${idx}  ${clip.t}  ${clip.sec.toFixed(2)}s`;
-
+                const lbl = document.createElement('span');
+                lbl.style.cssText = 'flex:1;color:var(--fg);';
+                lbl.textContent = label;
                 const btn = document.createElement('button');
                 btn.textContent = '▶ 再生';
                 btn.style.cssText = 'font-size:0.8rem;padding:3px 10px;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;color:var(--fg);white-space:nowrap;';
-                btn.addEventListener('click', () => playAudioClip(clip.audio, btn));
-
-                row.appendChild(label);
-                row.appendChild(btn);
+                btn.addEventListener('click', () => playFn(btn));
+                row.appendChild(lbl); row.appendChild(btn);
                 audioClipsList.appendChild(row);
             });
+        }
+
+        // Play WAV bytes (Uint8Array from IndexedDB) via an audio element
+        function playWavClip(wavBytes, btn) {
+            btn.disabled = true; btn.textContent = '▶ 再生中…';
+            const blob = new Blob([wavBytes], { type: 'audio/wav' });
+            const url  = URL.createObjectURL(blob);
+            const a    = new Audio(url);
+            a.onended  = () => { URL.revokeObjectURL(url); btn.disabled = false; btn.textContent = '▶ 再生'; };
+            a.onerror  = () => { URL.revokeObjectURL(url); btn.disabled = false; btn.textContent = '▶ 再生';
+                addLog('❌ WAV再生エラー'); };
+            a.play().catch(e => { btn.disabled = false; btn.textContent = '▶ 再生'; addLog(`❌ WAV再生: ${e.message}`); });
         }
 
         async function playAudioClip(audioData, btn) {
@@ -574,6 +598,67 @@
                 btn.textContent = '▶ 再生';
                 addLog(`❌ 再生エラー: ${e.message}`);
             }
+        }
+
+        // ── PCM → WAV Uint8Array (16-bit, mono, 16kHz) ────────────────────────
+        function pcmToWav(pcm, sr) {
+            const bps = 16, ch = 1, dataLen = pcm.length * 2;
+            const buf = new ArrayBuffer(44 + dataLen);
+            const v = new DataView(buf);
+            const s4 = (o, s) => [0,1,2,3].forEach(i => v.setUint8(o+i, s.charCodeAt(i)));
+            s4(0,'RIFF'); v.setUint32(4, 36+dataLen, true);
+            s4(8,'WAVE'); s4(12,'fmt ');
+            v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,ch,true);
+            v.setUint32(24,sr,true); v.setUint32(28,sr*ch*bps/8,true);
+            v.setUint16(32,ch*bps/8,true); v.setUint16(34,bps,true);
+            s4(36,'data'); v.setUint32(40,dataLen,true);
+            let off = 44;
+            for (let i = 0; i < pcm.length; i++) {
+                const x = Math.max(-1, Math.min(1, pcm[i]));
+                v.setInt16(off, x < 0 ? x * 32768 : x * 32767, true); off += 2;
+            }
+            return new Uint8Array(buf);
+        }
+
+        // ── IndexedDB persistence for radio audio clips ────────────────────────
+        const CLIP_DB = 'radio-clips-v1', CLIP_STORE = 'clips', MAX_PERSISTED = 5;
+        let _clipDb = null;
+        function openClipDb() {
+            if (_clipDb) return Promise.resolve(_clipDb);
+            return new Promise((res, rej) => {
+                const r = indexedDB.open(CLIP_DB, 1);
+                r.onupgradeneeded = e => e.target.result.createObjectStore(CLIP_STORE, { keyPath: 'id', autoIncrement: true });
+                r.onsuccess = e => { _clipDb = e.target.result; res(_clipDb); };
+                r.onerror   = e => rej(e.target.error);
+            });
+        }
+        async function saveClipToDb(t, sec, wav) {
+            try {
+                const db = await openClipDb();
+                const tx = db.transaction(CLIP_STORE, 'readwrite');
+                tx.objectStore(CLIP_STORE).add({ t, sec, wav, savedAt: Date.now() });
+                await new Promise(r => { tx.oncomplete = r; tx.onerror = r; });
+                // Trim to MAX_PERSISTED
+                const keys = await new Promise(r => {
+                    const req = db.transaction(CLIP_STORE,'readonly').objectStore(CLIP_STORE).getAllKeys();
+                    req.onsuccess = () => r(req.result);
+                    req.onerror   = () => r([]);
+                });
+                if (keys.length > MAX_PERSISTED) {
+                    const tx2 = db.transaction(CLIP_STORE, 'readwrite');
+                    keys.slice(0, keys.length - MAX_PERSISTED).forEach(k => tx2.objectStore(CLIP_STORE).delete(k));
+                }
+            } catch (e) { console.warn('saveClipToDb:', e); }
+        }
+        async function loadClipsFromDb() {
+            try {
+                const db = await openClipDb();
+                return new Promise(r => {
+                    const req = db.transaction(CLIP_STORE,'readonly').objectStore(CLIP_STORE).getAll();
+                    req.onsuccess = () => r(req.result);
+                    req.onerror   = () => r([]);
+                });
+            } catch { return []; }
         }
 
         // ── State ─────────────────────────────────────────────────────────────
@@ -1304,6 +1389,131 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
             if (!isProcessing) setStatus('Ready — tap Start to listen', 'listening');
         }
 
+        // Find first valid MPEG audio sync word (0xFF 0xEX with valid header bytes).
+        // Returns byte offset or -1 if not found.
+        function findMp3Sync(buf, start = 0) {
+            for (let i = start; i < buf.length - 3; i++) {
+                if (buf[i] === 0xFF && (buf[i+1] & 0xE0) === 0xE0) {
+                    const bitrateIdx = (buf[i+2] >> 4) & 0xF;
+                    const srateIdx   = (buf[i+2] >> 2) & 0x3;
+                    // 0xF = invalid bitrate, 0x3 = invalid sample rate
+                    if (bitrateIdx > 0 && bitrateIdx < 15 && srateIdx < 3) return i;
+                }
+            }
+            return -1;
+        }
+
+        // Fetch-based stream capture: decodes MP3 chunks with sync-word alignment.
+        // Falls back to raw decoding if no sync words found (for diagnostic).
+        async function captureRadioStream(url, ctx) {
+            const DECODE_BYTES  = 65536; // 64KB per decode attempt (more = more complete frames)
+            const MAX_QUEUE     = 60;
+            const pcmQueue      = [];
+            let firstDecode     = true;
+            let decodeFailCount = 0;
+            let syncLogDone     = false;
+
+            function feedLoop() {
+                if (!isRadioPlaying) return;
+                if (pcmQueue.length > 0) onAudioChunk(pcmQueue.shift());
+                radioFeedTimer = setTimeout(feedLoop, CHUNK_MS);
+            }
+            feedLoop();
+
+            radioAbortCtrl = new AbortController();
+            let resp;
+            try {
+                resp = await fetch(url, { signal: radioAbortCtrl.signal });
+            } catch (e) {
+                if (e.name === 'AbortError') return;
+                addLog(`❌ fetch失敗: ${e.message}`);
+                radioStatus.textContent = `接続失敗 (CORS?) — サーバーがAccess-Control-Allow-Origin:*を返す必要があります`;
+                return;
+            }
+            addLog(`📡 接続OK: HTTP ${resp.status}  ${resp.headers.get('content-type') || ''}  icy-metaint=${resp.headers.get('icy-metaint') || 'none'}`);
+
+            const reader = resp.body.getReader();
+            let rawBuf   = new Uint8Array(0);
+
+            try {
+                while (isRadioPlaying) {
+                    if (pcmQueue.length >= MAX_QUEUE) {
+                        await new Promise(r => setTimeout(r, CHUNK_MS * 8));
+                        continue;
+                    }
+
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    const tmp = new Uint8Array(rawBuf.length + value.length);
+                    tmp.set(rawBuf); tmp.set(value, rawBuf.length);
+                    rawBuf = tmp;
+
+                    // Log first 32 bytes as hex on first receive — reveals actual format
+                    if (!syncLogDone && rawBuf.length >= 32) {
+                        const hex = Array.from(rawBuf.slice(0, 32))
+                            .map(b => b.toString(16).padStart(2,'0')).join(' ');
+                        addLog(`🔬 ストリーム先頭bytes: ${hex}`);
+                        const syncPos = findMp3Sync(rawBuf, 0);
+                        addLog(`🔬 MP3 sync位置: ${syncPos >= 0 ? syncPos + 'B目' : '見つからず — MP3以外?'}`);
+                        syncLogDone = true;
+                        // Discard pre-sync garbage bytes once
+                        if (syncPos > 0) {
+                            rawBuf = rawBuf.slice(syncPos);
+                            addLog(`⚠️ sync前 ${syncPos}B を破棄`);
+                        }
+                    }
+
+                    if (rawBuf.length < DECODE_BYTES) continue;
+
+                    // Slice from sync word to ensure frame-aligned decode
+                    const syncPos = findMp3Sync(rawBuf, 0);
+                    if (syncPos < 0) {
+                        // No sync found in entire buffer — not raw MP3, discard
+                        addLog(`⚠️ sync見つからず — バッファ${rawBuf.length}B破棄`);
+                        rawBuf = new Uint8Array(0);
+                        continue;
+                    }
+                    if (syncPos > 0) rawBuf = rawBuf.slice(syncPos); // skip junk before sync
+                    if (rawBuf.length < DECODE_BYTES) continue;
+
+                    const slice = rawBuf.slice(0, DECODE_BYTES);
+                    rawBuf = rawBuf.slice(DECODE_BYTES);
+
+                    try {
+                        const decoded = await ctx.decodeAudioData(slice.buffer.slice(0));
+                        decodeFailCount = 0;
+
+                        const ch0 = decoded.getChannelData(0);
+                        let mono = ch0;
+                        if (decoded.numberOfChannels > 1) {
+                            const ch1 = decoded.getChannelData(1);
+                            mono = new Float32Array(ch0.length);
+                            for (let i = 0; i < ch0.length; i++) mono[i] = (ch0[i] + ch1[i]) * 0.5;
+                        }
+                        // Downsample to 16kHz if context gave a different rate
+                        const pcm16 = decoded.sampleRate !== SAMPLE_RATE
+                            ? downsample(mono, decoded.sampleRate) : mono;
+                        for (let i = 0; i + CHUNK_SIZE <= pcm16.length; i += CHUNK_SIZE)
+                            pcmQueue.push(pcm16.slice(i, i + CHUNK_SIZE));
+                        if (firstDecode) {
+                            firstDecode = false;
+                            addLog(`✅ デコード成功: ${decoded.sampleRate}Hz → ${SAMPLE_RATE}Hz  ${decoded.duration.toFixed(2)}s  ${pcmQueue.length}チャンク`);
+                        }
+                        radioStatus.textContent = `受信中: ${radioStreamSel.options[radioStreamSel.selectedIndex].text}`;
+                    } catch (e) {
+                        decodeFailCount++;
+                        if (decodeFailCount <= 5 || decodeFailCount % 20 === 0)
+                            addLog(`⚠️ デコード失敗 ${decodeFailCount}回目 (${DECODE_BYTES}B@sync): ${e.message}`);
+                    }
+                }
+            } catch (e) {
+                if (e.name !== 'AbortError') addLog(`⚠️ ストリーム切断: ${e.message}`);
+            } finally {
+                reader.cancel().catch(() => {});
+            }
+        }
+
         radioTestBtn.addEventListener('click', async () => {
             if (isRadioPlaying) { stopRadioTest(); return; }
             if (!transcriber)   { radioStatus.textContent = '⚠️ モデル未ロード'; return; }
@@ -1321,11 +1531,11 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                 radioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
                 await radioCtx.resume();
 
-                // crossOrigin BEFORE src — required for createMediaElementSource CORS tap
+                // Separate audio element for audible playback (no crossOrigin needed)
                 radioAudio = new Audio();
-                radioAudio.crossOrigin = 'anonymous';
                 radioAudio.src = streamUrl;
                 radioAudio.volume = 0.6;
+                radioAudio.play().catch(() => {});
 
                 // Reset VAD state
                 inSpeech = false; silenceCount = 0; speechBuf = []; preRoll = [];
@@ -1333,41 +1543,18 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                 isListening = true;
                 isRadioPlaying = true;
 
-                // Tap decoded PCM via Web Audio BEFORE play() starts routing audio.
-                // createMediaElementSource requires crossOrigin=anonymous + server CORS headers.
-                // ScriptProcessorNode accumulates decoded samples and dispatches CHUNK_SIZE blocks.
-                const elemSrc = radioCtx.createMediaElementSource(radioAudio);
-                radioScriptNode = radioCtx.createScriptProcessor(4096, 1, 1);
-                let radioAccum = new Float32Array(0);
-                let tapLogDone = false;
-                radioScriptNode.onaudioprocess = (e) => {
-                    if (!isRadioPlaying) return;
-                    const raw = e.inputBuffer.getChannelData(0);
-                    // Downsample only when iOS Safari ignores the 16kHz hint
-                    const pcm16 = radioCtx.sampleRate !== SAMPLE_RATE
-                        ? downsample(raw, radioCtx.sampleRate, SAMPLE_RATE) : raw.slice();
-                    if (!tapLogDone) {
-                        const rmsVal = Math.sqrt(pcm16.reduce((a, x) => a + x*x, 0) / pcm16.length);
-                        addLog(`🎙 PCMタップ: rms=${rmsVal.toFixed(4)} (${rmsVal < 0.0001 ? '⚠️ ゼロ — BBC CORSヘッダー未設定?' : '✅ OK'})`);
-                        tapLogDone = true;
-                    }
-                    const merged = new Float32Array(radioAccum.length + pcm16.length);
-                    merged.set(radioAccum); merged.set(pcm16, radioAccum.length);
-                    radioAccum = merged;
-                    while (radioAccum.length >= CHUNK_SIZE) {
-                        onAudioChunk(radioAccum.slice(0, CHUNK_SIZE));
-                        radioAccum = radioAccum.slice(CHUNK_SIZE);
-                    }
-                };
-                elemSrc.connect(radioScriptNode);
-                radioScriptNode.connect(radioCtx.destination); // required for onaudioprocess to fire
+                CHUNK_MS = CHUNK_SIZE / SAMPLE_RATE * 1000; // 256ms (16kHz chunks from fetch decode)
+                addLog(`🔊 RadioCtx: ${radioCtx.sampleRate}Hz, CHUNK_MS=${CHUNK_MS.toFixed(1)}ms (fetch decode)`);
 
-                radioAudio.play().catch(e => addLog(`▶️ play失敗: ${e.message}`));
-                CHUNK_MS = CHUNK_SIZE / SAMPLE_RATE * 1000; // 256ms (16kHz chunks)
-                addLog(`🔊 RadioCtx: ${radioCtx.sampleRate}Hz, CHUNK_MS=${CHUNK_MS.toFixed(1)}ms (MediaElementSource)`);
+                setStatus('ラジオ受信中… (連続録音)', 'listening');
+                radioTestBtn.textContent = '⏹ 停止';
+                radioTestBtn.style.background = 'var(--accent)';
+                radioTestBtn.style.color = '#fff';
+                radioStatus.textContent = '連続録音モード — 30秒ごとにWhisperへ送信';
+                volWrap.classList.add('visible');
+                recordBtn.disabled = true;
 
-                // Wait until stopRadioTest() resolves this promise
-                await new Promise(resolve => { radioStopResolve = resolve; });
+                await captureRadioStream(streamUrl, radioCtx);
 
             } catch (err) {
                 addLog(`❌ ラジオ接続失敗: ${err.message}`);
