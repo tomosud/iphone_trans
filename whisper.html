@@ -96,37 +96,9 @@
             width: 0%;
         }
 
-        .vol-wrap {
-            display: none;
-            align-items: center;
-            gap: 8px;
+        .vad-graph {
+            margin-top: 6px;
         }
-        .vol-wrap.visible { display: flex; }
-        .vol-label { font-size: 0.8rem; color: var(--muted); white-space: nowrap; }
-        .vol-track {
-            flex: 1;
-            height: 6px;
-            background: var(--panel-border);
-            border-radius: 3px;
-            overflow: hidden;
-        }
-        .vol-fill {
-            height: 100%;
-            border-radius: 3px;
-            width: 0%;
-            transition: width 0.05s linear, background 0.1s;
-            background: #10b981;
-        }
-        .vol-fill.active { background: #ef4444; }
-
-        .vad-config {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 8px;
-            font-size: 0.85rem;
-        }
-        .vad-config label { color: var(--muted); display: block; margin-bottom: 3px; }
-        .vad-config input[type=range] { width: 100%; }
 
         .controls { display: flex; gap: 8px; flex: 1; }
         .btn-record {
@@ -186,52 +158,18 @@
                 <div class="progress-fill" id="progressFill"></div>
             </div>
 
-            <div class="vol-wrap" id="volWrap">
-                <span class="vol-label">Level</span>
-                <div class="vol-track"><div class="vol-fill" id="volFill"></div></div>
-            </div>
 
-            <details style="font-size:0.85rem;">
-                <summary style="cursor:pointer;color:var(--muted);user-select:none;">VAD settings (advanced)</summary>
-                <div class="vad-config" style="margin-top:8px;">
-                    <div>
-                        <label>最低閾値 <span id="threshVal">0.001</span>（自動適応）</label>
-                        <input type="range" id="threshSlider" min="1" max="50" value="1">
-                    </div>
-                    <div>
-                        <label>無音カットoff <span id="silenceVal">1.5</span>s</label>
-                        <input type="range" id="silenceSlider" min="2" max="40" value="6">
-                    </div>
-                    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:6px;">
-                        <div>
-                            <label>グラフスケール
-                                <select id="vadScaleSel" style="margin-left:4px;font-size:0.8rem;">
-                                    <option value="0">Auto</option>
-                                    <option value="0.005">0.005</option>
-                                    <option value="0.010">0.010</option>
-                                    <option value="0.020">0.020</option>
-                                    <option value="0.050">0.050</option>
-                                    <option value="0.100" selected>0.100</option>
-                                </select>
-                            </label>
-                        </div>
-                        <div>
-                            <label>入力ゲイン <span id="gainVal">1.0</span>×
-                                <input type="range" id="gainSlider" min="10" max="100" value="10" style="width:100px;vertical-align:middle;">
-                            </label>
-                        </div>
-                    </div>
-                    <canvas id="vadCanvas" style="width:100%;height:80px;display:block;border-radius:6px;margin-top:10px;background:#0d1117;"></canvas>
-                    <div style="display:flex;gap:10px;font-size:0.7rem;margin-top:3px;font-family:monospace;flex-wrap:wrap;color:var(--muted);">
-                        <span style="color:#ef4444;">▬ onset</span>
-                        <span style="color:#f59e0b;">▬ offset</span>
-                        <span style="color:#22d3ee;">╌ min floor</span>
-                        <span style="color:#555;">╌ noise floor</span>
-                        <span style="color:#22c55e;">▬ 発話中</span>
-                    </div>
-                    <div id="vadDebug" style="margin-top:4px;font-size:0.75rem;color:var(--muted);font-family:monospace;letter-spacing:0.02em;"></div>
+            <div class="vad-graph">
+                <canvas id="vadCanvas" style="width:100%;height:80px;display:block;border-radius:6px;background:#0d1117;"></canvas>
+                <div style="display:flex;gap:10px;font-size:0.7rem;margin-top:3px;font-family:monospace;flex-wrap:wrap;color:var(--muted);">
+                    <span style="color:#ef4444;">▬ onset</span>
+                    <span style="color:#f59e0b;">▬ offset</span>
+                    <span style="color:#22d3ee;">╌ min floor</span>
+                    <span style="color:#555;">╌ noise floor</span>
+                    <span style="color:#22c55e;">▬ 発話中</span>
                 </div>
-            </details>
+                <div id="vadDebug" style="margin-top:4px;font-size:0.75rem;color:var(--muted);font-family:monospace;letter-spacing:0.02em;"></div>
+            </div>
         </div>
 
         <!-- Middle: controls + display -->
@@ -343,13 +281,7 @@
         const finalText     = document.getElementById('finalText');
         const clearBtn      = document.getElementById('clearBtn');
         const sendBtn       = document.getElementById('sendBtn');
-        const volWrap       = document.getElementById('volWrap');
-        const volFill       = document.getElementById('volFill');
         const langSelect    = document.getElementById('langSelect');
-        const threshSlider  = document.getElementById('threshSlider');
-        const threshVal     = document.getElementById('threshVal');
-        const silenceSlider = document.getElementById('silenceSlider');
-        const silenceVal    = document.getElementById('silenceVal');
         const vadDebug      = document.getElementById('vadDebug');
         const logArea       = document.getElementById('logArea');
         const logBadge      = document.getElementById('logBadge');
@@ -365,7 +297,7 @@
         const PRE_ROLL_CHUNKS   = 4;             // ~1s pre-roll
         const MIN_SPEECH_CHUNKS = 2;             // ignore clips shorter than ~2 chunks
         const MAX_SPEECH_CHUNKS = Math.round(25 * SAMPLE_RATE / CHUNK_SIZE); // 25s auto-flush
-        const ONSET_CHUNKS_NEEDED = 2;           // require 2 consecutive hits before speech start
+        const ONSET_CHUNKS_NEEDED = 1;           // 1 chunk hit triggers speech start (was 2; reduces latency, false positives managed by AGC cap)
 
         // Adaptive VAD: noise floor tracks background RMS; onset/offset use multipliers
         const NOISE_ALPHA   = 0.006;   // noise floor adaptation speed (faster post-speech readaptation)
@@ -374,11 +306,11 @@
         // Auto gain control for quiet speech (after manual gain, before VAD/Whisper)
         const AGC_TARGET_RMS = 0.030;
         const AGC_MIN_GAIN   = 1.0;
-        const AGC_MAX_GAIN   = 4.0;    // reduced from 10.0 to prevent clipping
+        const AGC_MAX_GAIN   = 2.0;    // conservative cap to avoid over-amplification
         const AGC_ALPHA      = 0.03;   // slower tracking for smoother gain (was 0.06)
 
         // Warmup: suppress speech detection for the first N chunks after startListening()
-        const WARMUP_CHUNKS = 20; // ~5s at 16kHz/4096 samples per chunk (4096/16000 × 20 ≈ 5.1s)
+        const WARMUP_CHUNKS = 8; // ~2s calibration (4096/16000 × 8 ≈ 2s); reduced from 20 to avoid long wait before first detection
         let warmupCount = 0;
 
         let MANUAL_FLOOR      = 0.005; // hard minimum floor – kept low so adaptive logic dominates
@@ -401,60 +333,22 @@
 
         // ── Persist VAD settings ──────────────────────────────────────────────
         function saveVadSettings() {
-            localStorage.setItem('vad_thresh',  threshSlider.value);
-            localStorage.setItem('vad_silence', silenceSlider.value);
             localStorage.setItem('whisper_lang', langSelect.value);
             localStorage.setItem('whisper_model', modelSelect.value);
         }
         function loadVadSettings() {
-            const t = localStorage.getItem('vad_thresh');
-            const s = localStorage.getItem('vad_silence');
             const l = localStorage.getItem('whisper_lang');
             const m = localStorage.getItem('whisper_model');
-            if (t) { threshSlider.value = t; }
-            if (s) { silenceSlider.value = s; }
             if (l !== null) { langSelect.value = l; }
             else { langSelect.value = 'en'; }
             if (m && [...modelSelect.options].some(o => o.value === m)) {
                 modelSelect.value = m;
             }
-            // apply loaded values – MANUAL_FLOOR is kept low (0.005) so adaptive logic dominates;
-            // the slider acts as an advanced override, not the primary threshold.
-            MANUAL_FLOOR          = threshSlider.value / 1000;
-            SILENCE_CHUNKS_NEEDED = parseInt(silenceSlider.value);
-            threshVal.textContent  = MANUAL_FLOOR.toFixed(3);
-            silenceVal.textContent = (SILENCE_CHUNKS_NEEDED * CHUNK_MS / 1000).toFixed(1);
         }
         loadVadSettings();
 
-        threshSlider.addEventListener('input', () => {
-            MANUAL_FLOOR = threshSlider.value / 1000;
-            threshVal.textContent = MANUAL_FLOOR.toFixed(3);
-            saveVadSettings();
-            drawVadCanvas();
-        });
-        silenceSlider.addEventListener('input', () => {
-            SILENCE_CHUNKS_NEEDED = parseInt(silenceSlider.value);
-            silenceVal.textContent = (SILENCE_CHUNKS_NEEDED * CHUNK_MS / 1000).toFixed(1);
-            saveVadSettings();
-        });
-
         langSelect.addEventListener('change', saveVadSettings);
         modelSelect.addEventListener('change', saveVadSettings);
-
-        // ── Graph scale + input gain controls ─────────────────────────────────
-        let inputGain = 1.0;
-        const vadScaleSel = document.getElementById('vadScaleSel');
-        const gainSlider  = document.getElementById('gainSlider');
-        const gainVal     = document.getElementById('gainVal');
-        vadScaleSel.addEventListener('change', () => {
-            vadScaleFixed = parseFloat(vadScaleSel.value);
-            drawVadCanvas();
-        });
-        gainSlider.addEventListener('input', () => {
-            inputGain = gainSlider.value / 10;
-            gainVal.textContent = inputGain.toFixed(1);
-        });
 
         // ── VAD canvas visualization ──────────────────────────────────────────
         const vadCanvas    = document.getElementById('vadCanvas');
@@ -961,8 +855,12 @@
             rmsIn = Math.sqrt(rmsIn / audio.length);
             let normalizedAudio = audio;
             if (rmsIn > 0.001) {
-                const targetRms = 0.15;
-                const scale = Math.min(targetRms / rmsIn, 6); // cap 6× gain (over-amplification prevention)
+                // RMS-normalize audio to a fixed target level so quiet recordings
+                // are amplified to the same level as close-mic speech.
+                // targetRms=0.10 and 3× cap are conservative to avoid feeding
+                // Whisper clipped/over-amplified audio that produces empty results.
+                const targetRms = 0.10;
+                const scale = Math.min(targetRms / rmsIn, 3); // cap 3× gain (over-amplification prevention)
                 normalizedAudio = new Float32Array(audio.length);
                 for (let i = 0; i < audio.length; i++) {
                     normalizedAudio[i] = Math.max(-1, Math.min(1, audio[i] * scale));
@@ -1038,14 +936,6 @@
             let samples = ctxRate !== SAMPLE_RATE
                 ? downsample(rawSamples, ctxRate)
                 : rawSamples;
-            // Apply input gain (amplify before VAD + Whisper; clamp to [-1, 1])
-            if (inputGain !== 1.0) {
-                const gained = new Float32Array(samples.length);
-                for (let i = 0; i < samples.length; i++)
-                    gained[i] = Math.max(-1, Math.min(1, samples[i] * inputGain));
-                samples = gained;
-            }
-
             // Auto gain: lift quiet speech automatically, keep stable with smoothing.
             // Only update gain when NOT speaking to prevent gain drift during speech,
             // which would destabilise the audio fed to Whisper.
@@ -1071,8 +961,6 @@
 
             const level = rms(samples);
             smoothedRms = smoothedRms * 0.7 + level * 0.3;
-            const pct = Math.min(100, smoothedRms / 0.08 * 100);
-            volFill.style.width = pct + '%';
 
             // Adaptive onset/offset multipliers: quiet environment → lower mult (higher sensitivity);
             // noisy environment → higher mult (reduces false positives).
@@ -1090,8 +978,6 @@
             }
             // Slowly return toward manual floor so VAD does not "stick" too high.
             noiseFloor = noiseFloor * 0.999 + MANUAL_FLOOR * 0.001;
-
-            volFill.className = 'vol-fill' + (level > onsetThresh ? ' active' : '');
 
             // Warmup: let noiseFloor calibrate before attempting speech detection
             if (warmupCount < WARMUP_CHUNKS) {
@@ -1310,7 +1196,6 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                 recordBtn.textContent = '⏹️ Stop listening';
                 recordBtn.classList.add('active');
                 modelSelect.disabled = true;
-                volWrap.classList.add('visible');
                 sendBtn.classList.add('visible');
                 sendBtn.disabled = false;
 
@@ -1350,8 +1235,6 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
             recordBtn.textContent = '🎙️ Start listening';
             recordBtn.classList.remove('active');
             modelSelect.disabled = false;
-            volWrap.classList.remove('visible');
-            volFill.style.width = '0%';
             sendBtn.classList.remove('visible');
             sendBtn.disabled = true;
             if (!isProcessing) setStatus('Ready — tap Start to listen', 'listening');
@@ -1523,8 +1406,6 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
             radioTestBtn.textContent = '▶ 開始';
             radioTestBtn.style.background = 'var(--card)';
             radioTestBtn.style.color = 'var(--fg)';
-            volWrap.classList.remove('visible');
-            volFill.style.width = '0%';
             recordBtn.disabled = false;
             if (!isProcessing) setStatus('Ready — tap Start to listen', 'listening');
         }
@@ -1701,7 +1582,6 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                 radioTestBtn.style.background = 'var(--accent)';
                 radioTestBtn.style.color = '#fff';
                 radioStatus.textContent = '連続録音モード — 15秒ごとにWhisperへ送信';
-                volWrap.classList.add('visible');
                 recordBtn.disabled = true;
 
                 await captureRadioStream(streamUrl, radioCtx);
@@ -1731,22 +1611,10 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
 
             testBtn.addEventListener('click', async () => {
                 testBtn.disabled = true;
-                volWrap.classList.add('visible');
-
-                // Simulate speech detected: ramp volume bar up
-                let v = 0;
-                const rampUp = setInterval(() => {
-                    v = Math.min(v + 5, 75);
-                    volFill.style.width = v + '%';
-                    volFill.className = 'vol-fill active';
-                }, 60);
 
                 startRecTimer();
 
                 await new Promise(r => setTimeout(r, 3500));  // 3.5s "recording"
-                clearInterval(rampUp);
-                volFill.style.width = '0%';
-                volFill.className = 'vol-fill';
 
                 stopRecTimer();
                 const fakeAudioSec = 3.5;
@@ -1758,7 +1626,6 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                 results.push('（テスト）これはテスト用の文字起こし結果です。');
                 renderDisplay();
                 setStatus('Test mode — ready', 'listening');
-                volWrap.classList.remove('visible');
                 testBtn.disabled = false;
             });
         } else {
