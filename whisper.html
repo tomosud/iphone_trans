@@ -1304,100 +1304,6 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
             if (!isProcessing) setStatus('Ready — tap Start to listen', 'listening');
         }
 
-        // Fetch-based stream capture: decodes MP3 chunks and feeds 16kHz PCM to VAD.
-        // Requires the stream server to send CORS headers (Access-Control-Allow-Origin: *).
-        // Uses fixed-slice approach: attempt decode every DECODE_BYTES, discard on failure
-        // so bad initial bytes (headers, alignment) are skipped automatically.
-        async function captureRadioStream(url, ctx) {
-            const DECODE_BYTES  = 32768; // 32KB per decode attempt
-            const MAX_QUEUE     = 60;
-            const pcmQueue      = [];
-            let firstDecode     = true;
-            let decodeFailCount = 0;
-
-            // Feed one CHUNK_SIZE 16kHz PCM block per CHUNK_MS tick
-            function feedLoop() {
-                if (!isRadioPlaying) return;
-                if (pcmQueue.length > 0) onAudioChunk(pcmQueue.shift());
-                radioFeedTimer = setTimeout(feedLoop, CHUNK_MS);
-            }
-            feedLoop();
-
-            radioAbortCtrl = new AbortController();
-            let resp;
-            try {
-                resp = await fetch(url, { signal: radioAbortCtrl.signal });
-            } catch (e) {
-                if (e.name === 'AbortError') return;
-                addLog(`❌ fetch失敗: ${e.message}`);
-                radioStatus.textContent = `接続失敗 (CORS?) — サーバーがAccess-Control-Allow-Origin:*を返す必要があります`;
-                return;
-            }
-            addLog(`📡 接続OK: HTTP ${resp.status}  ${resp.headers.get('content-type') || ''}  icy-metaint=${resp.headers.get('icy-metaint') || 'none'}`);
-
-            const reader = resp.body.getReader();
-            let rawBuf   = new Uint8Array(0);
-
-            try {
-                while (isRadioPlaying) {
-                    if (pcmQueue.length >= MAX_QUEUE) {
-                        await new Promise(r => setTimeout(r, CHUNK_MS * 8));
-                        continue;
-                    }
-
-                    const { done, value } = await reader.read();
-                    if (done) break;
-
-                    // Append new bytes
-                    const tmp = new Uint8Array(rawBuf.length + value.length);
-                    tmp.set(rawBuf); tmp.set(value, rawBuf.length);
-                    rawBuf = tmp;
-
-                    if (rawBuf.length < DECODE_BYTES) continue;
-
-                    // Slice DECODE_BYTES and advance pointer (discard on failure).
-                    // This skips undecodable header/metadata bytes naturally.
-                    const slice = rawBuf.slice(0, DECODE_BYTES);
-                    rawBuf = rawBuf.slice(DECODE_BYTES);
-
-                    try {
-                        const decoded = await ctx.decodeAudioData(slice.buffer.slice(0));
-                        decodeFailCount = 0;
-
-                        const ch0 = decoded.getChannelData(0);
-                        let mono = ch0;
-                        if (decoded.numberOfChannels > 1) {
-                            const ch1 = decoded.getChannelData(1);
-                            mono = new Float32Array(ch0.length);
-                            for (let i = 0; i < ch0.length; i++) mono[i] = (ch0[i] + ch1[i]) * 0.5;
-                        }
-                        // Pre-downsample to SAMPLE_RATE (16kHz) so onAudioChunk receives
-                        // correctly-sized chunks regardless of actual context sampleRate.
-                        const pcm16 = decoded.sampleRate !== SAMPLE_RATE
-                            ? downsample(mono, decoded.sampleRate, SAMPLE_RATE)
-                            : mono;
-                        for (let i = 0; i + CHUNK_SIZE <= pcm16.length; i += CHUNK_SIZE) {
-                            pcmQueue.push(pcm16.slice(i, i + CHUNK_SIZE));
-                        }
-                        if (firstDecode) {
-                            firstDecode = false;
-                            addLog(`✅ デコード成功: ${decoded.sampleRate}Hz → ${SAMPLE_RATE}Hz  ${decoded.duration.toFixed(2)}s  ${pcmQueue.length}チャンク`);
-                        }
-                        radioStatus.textContent = `受信中: ${radioStreamSel.options[radioStreamSel.selectedIndex].text}`;
-                    } catch (e) {
-                        decodeFailCount++;
-                        if (decodeFailCount <= 3 || decodeFailCount % 10 === 0) {
-                            addLog(`⚠️ デコード失敗 ${decodeFailCount}回目 (スライス${DECODE_BYTES}B): ${e.message}`);
-                        }
-                    }
-                }
-            } catch (e) {
-                if (e.name !== 'AbortError') addLog(`⚠️ ストリーム切断: ${e.message}`);
-            } finally {
-                reader.cancel().catch(() => {});
-            }
-        }
-
         radioTestBtn.addEventListener('click', async () => {
             if (isRadioPlaying) { stopRadioTest(); return; }
             if (!transcriber)   { radioStatus.textContent = '⚠️ モデル未ロード'; return; }
@@ -1412,12 +1318,12 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
             addLog(`📻 ラジオ接続: ${streamUrl}`);
 
             try {
-                // sampleRate:16000 makes decodeAudioData work for BBC streams;
-                // captureRadioStream pre-downsamples PCM to 16kHz before queuing.
                 radioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
                 await radioCtx.resume();
 
+                // crossOrigin BEFORE src — required for createMediaElementSource CORS tap
                 radioAudio = new Audio();
+                radioAudio.crossOrigin = 'anonymous';
                 radioAudio.src = streamUrl;
                 radioAudio.volume = 0.6;
 
@@ -1427,21 +1333,41 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                 isListening = true;
                 isRadioPlaying = true;
 
-                radioAudio.play().catch(() => {});
-                // feedLoop timing based on 16kHz chunks from captureRadioStream
-                CHUNK_MS = CHUNK_SIZE / SAMPLE_RATE * 1000; // 256ms
-                addLog(`🔊 RadioCtx: ${radioCtx.sampleRate}Hz (実際: ${SAMPLE_RATE}Hz chunks), CHUNK_MS=${CHUNK_MS.toFixed(1)}ms`);
+                // Tap decoded PCM via Web Audio BEFORE play() starts routing audio.
+                // createMediaElementSource requires crossOrigin=anonymous + server CORS headers.
+                // ScriptProcessorNode accumulates decoded samples and dispatches CHUNK_SIZE blocks.
+                const elemSrc = radioCtx.createMediaElementSource(radioAudio);
+                radioScriptNode = radioCtx.createScriptProcessor(4096, 1, 1);
+                let radioAccum = new Float32Array(0);
+                let tapLogDone = false;
+                radioScriptNode.onaudioprocess = (e) => {
+                    if (!isRadioPlaying) return;
+                    const raw = e.inputBuffer.getChannelData(0);
+                    // Downsample only when iOS Safari ignores the 16kHz hint
+                    const pcm16 = radioCtx.sampleRate !== SAMPLE_RATE
+                        ? downsample(raw, radioCtx.sampleRate, SAMPLE_RATE) : raw.slice();
+                    if (!tapLogDone) {
+                        const rmsVal = Math.sqrt(pcm16.reduce((a, x) => a + x*x, 0) / pcm16.length);
+                        addLog(`🎙 PCMタップ: rms=${rmsVal.toFixed(4)} (${rmsVal < 0.0001 ? '⚠️ ゼロ — BBC CORSヘッダー未設定?' : '✅ OK'})`);
+                        tapLogDone = true;
+                    }
+                    const merged = new Float32Array(radioAccum.length + pcm16.length);
+                    merged.set(radioAccum); merged.set(pcm16, radioAccum.length);
+                    radioAccum = merged;
+                    while (radioAccum.length >= CHUNK_SIZE) {
+                        onAudioChunk(radioAccum.slice(0, CHUNK_SIZE));
+                        radioAccum = radioAccum.slice(CHUNK_SIZE);
+                    }
+                };
+                elemSrc.connect(radioScriptNode);
+                radioScriptNode.connect(radioCtx.destination); // required for onaudioprocess to fire
 
-                setStatus('ラジオ受信中… (連続録音)', 'listening');
-                radioTestBtn.textContent = '⏹ 停止';
-                radioTestBtn.style.background = 'var(--accent)';
-                radioTestBtn.style.color = '#fff';
-                radioStatus.textContent = '連続録音モード — 30秒ごとにWhisperへ送信';
-                volWrap.classList.add('visible');
-                recordBtn.disabled = true;
+                radioAudio.play().catch(e => addLog(`▶️ play失敗: ${e.message}`));
+                CHUNK_MS = CHUNK_SIZE / SAMPLE_RATE * 1000; // 256ms (16kHz chunks)
+                addLog(`🔊 RadioCtx: ${radioCtx.sampleRate}Hz, CHUNK_MS=${CHUNK_MS.toFixed(1)}ms (MediaElementSource)`);
 
-                // Fetch-based PCM capture: native-rate chunks, onAudioChunk downsamples to 16kHz
-                await captureRadioStream(streamUrl, radioCtx);
+                // Wait until stopRadioTest() resolves this promise
+                await new Promise(resolve => { radioStopResolve = resolve; });
 
             } catch (err) {
                 addLog(`❌ ラジオ接続失敗: ${err.message}`);
