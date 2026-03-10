@@ -620,7 +620,9 @@
             renderDisplay();
             stopRecTimer();
             startProcTimer(audioSec);
-            const selectedLang = langSelect.value || null;
+            // .en models are English-only; force lang='en' regardless of selector
+            const isEnOnly = modelSelect.value.includes('.en');
+            const selectedLang = isEnOnly ? 'en' : (langSelect.value || null);
             const modelName    = modelSelect.value.split('/').pop();
             addLog(`⚙️ Whisper開始: 音声 ${audioSec.toFixed(2)}s  rms=${rmsIn.toFixed(4)}  model=${modelName}  lang=${selectedLang ?? 'auto'}`);
 
