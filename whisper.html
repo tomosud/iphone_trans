@@ -294,10 +294,11 @@
         const SAMPLE_RATE       = 16000;
         const CHUNK_SIZE        = 4096;          // samples per worklet callback (native rate)
         let   CHUNK_MS          = CHUNK_SIZE / SAMPLE_RATE * 1000; // updated after AudioContext starts
-        const PRE_ROLL_CHUNKS   = 4;             // ~1s pre-roll
+        const PRE_ROLL_CHUNKS   = 6;             // ~1.5s pre-roll
         const MIN_SPEECH_CHUNKS = 2;             // ignore clips shorter than ~2 chunks
         const MAX_SPEECH_CHUNKS = Math.round(25 * SAMPLE_RATE / CHUNK_SIZE); // 25s auto-flush
-        const ONSET_CHUNKS_NEEDED = 1;           // 1 chunk hit triggers speech start (was 2; reduces latency, false positives managed by AGC cap)
+        const ONSET_CHUNKS_NEEDED = 2;           // require 2 consecutive hits to reduce over-segmentation
+        const KEEP_TRAILING_CHUNKS = 2;          // keep ~0.5s tail to avoid cutting sentence endings
 
         // Adaptive VAD: noise floor tracks background RMS; onset/offset use multipliers
         const NOISE_ALPHA   = 0.006;   // noise floor adaptation speed (faster post-speech readaptation)
@@ -314,7 +315,7 @@
         let warmupCount = 0;
 
         let MANUAL_FLOOR      = 0.005; // hard minimum floor – kept low so adaptive logic dominates
-        let SILENCE_CHUNKS_NEEDED = 6; // ~1.5 s silence to end segment
+        let SILENCE_CHUNKS_NEEDED = 8; // ~2.0 s silence to end segment
 
         // ── Adaptive VAD multiplier calculation ──────────────────────────────
         // Returns onset/offset multipliers that scale with the background noise level.
@@ -642,6 +643,7 @@
         let mediaStream     = null;
         let workletNode     = null;
         let scriptNode      = null;  // fallback
+        let monitorSinkNode = null;  // muted node to keep processing graph alive
         let isListening     = false;
         let isProcessing    = false;
 
@@ -1085,7 +1087,7 @@
             if (!isRadioPlaying) {
                 const { offsetMult: _trimOffsetMult } = computeAdaptiveMults(noiseFloor);
                 const trimThresh = Math.max(MANUAL_FLOOR * 0.6, noiseFloor * _trimOffsetMult);
-                while (seg.length > MIN_SPEECH_CHUNKS && rms(seg[seg.length - 1]) < trimThresh) {
+                while (seg.length > Math.max(MIN_SPEECH_CHUNKS, KEEP_TRAILING_CHUNKS) && rms(seg[seg.length - 1]) < trimThresh) {
                     seg.pop();
                 }
             }
@@ -1165,7 +1167,12 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                             if (isListening) onAudioChunk(e.data);
                         };
                         source.connect(workletNode);
-                        workletNode.connect(audioCtx.destination);
+                        // Keep processor graph alive without routing microphone audio
+                        // back to speakers (feedback/quality degradation prevention).
+                        monitorSinkNode = audioCtx.createGain();
+                        monitorSinkNode.gain.value = 0;
+                        workletNode.connect(monitorSinkNode);
+                        monitorSinkNode.connect(audioCtx.destination);
                         useWorklet = true;
                     } catch (e) {
                         console.warn('AudioWorklet failed, falling back to ScriptProcessor:', e);
@@ -1181,7 +1188,10 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                         }
                     };
                     source.connect(scriptNode);
-                    scriptNode.connect(audioCtx.destination);
+                    monitorSinkNode = audioCtx.createGain();
+                    monitorSinkNode.gain.value = 0;
+                    scriptNode.connect(monitorSinkNode);
+                    monitorSinkNode.connect(audioCtx.destination);
                 }
 
                 // Reset VAD state
@@ -1226,6 +1236,7 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
 
             if (workletNode) { workletNode.disconnect(); workletNode = null; }
             if (scriptNode)  { scriptNode.disconnect(); scriptNode = null; }
+            if (monitorSinkNode) { monitorSinkNode.disconnect(); monitorSinkNode = null; }
             if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
             // Suspend rather than close so the AudioContext can be re-used on the
             // next startListening() call — closing and re-creating it causes failures
