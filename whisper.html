@@ -214,6 +214,7 @@
                     <div class="controls">
                         <button class="btn-record" id="recordBtn" disabled>🎙️ Start listening</button>
                         <button class="btn-send" id="sendBtn" disabled>送信</button>
+                        <button id="sampleBtn" style="font-size:0.8rem;padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;color:var(--fg);" disabled title="JFK speech sample (11s English)">▶ Sample</button>
                     </div>
                     <button id="clearBtn" class="clear-button" type="button">Clear</button>
                 </div>
@@ -566,6 +567,7 @@
                 });
                 setStatus('Ready — tap Start to listen', 'listening');
                 recordBtn.disabled = false;
+                sampleBtn.disabled = false;
                 setTimeout(() => progressBar.classList.remove('visible'), 800);
             } catch (err) {
                 console.error(err);
@@ -921,6 +923,44 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
         }
 
         clearBtn.addEventListener('click', () => void clearAll());
+
+        // ── Sample audio test ─────────────────────────────────────────────────
+        // JFK "Ask not what your country can do for you" (~11s, 16kHz mono WAV)
+        sampleBtn.addEventListener('click', async () => {
+            if (!transcriber) { addLog('⚠️ モデル未ロード'); return; }
+            sampleBtn.disabled = true;
+            addLog('📂 sample_en.wav を読み込み中…');
+            try {
+                const resp = await fetch('sample_en.wav');
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const arrayBuf = await resp.arrayBuffer();
+
+                // Decode via a temporary AudioContext resampled to 16kHz
+                const decCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+                const decoded = await decCtx.decodeAudioData(arrayBuf);
+                decCtx.close();
+
+                // Mix to mono Float32Array
+                const ch0 = decoded.getChannelData(0);
+                let audio;
+                if (decoded.numberOfChannels === 1) {
+                    audio = ch0.slice();
+                } else {
+                    const ch1 = decoded.getChannelData(1);
+                    audio = new Float32Array(ch0.length);
+                    for (let i = 0; i < ch0.length; i++) audio[i] = (ch0[i] + ch1[i]) / 2;
+                }
+
+                addLog(`✅ 読み込み完了: ${(audio.length / SAMPLE_RATE).toFixed(2)}s — Whisperへ送信`);
+                // Wrap in a single chunk array and transcribe directly
+                transcribeSegment([audio]);
+            } catch (e) {
+                addLog(`❌ サンプル読み込み失敗: ${e.message}`);
+                console.error(e);
+            } finally {
+                sampleBtn.disabled = false;
+            }
+        });
 
         const savedLink = document.getElementById('savedLink');
         savedLink.addEventListener('click', async (e) => {
