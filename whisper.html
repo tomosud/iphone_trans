@@ -680,7 +680,6 @@
             for (const c of chunks) { audio.set(c, off); off += c.length; }
 
             const audioSec = totalLen / SAMPLE_RATE;
-            storeAudioClip(audio, audioSec);
 
             // RMS-normalize audio to a fixed target level so quiet lecture
             // recordings are amplified to the same level as close-mic speech.
@@ -696,6 +695,7 @@
                     normalizedAudio[i] = Math.max(-1, Math.min(1, audio[i] * scale));
                 }
             }
+            storeAudioClip(normalizedAudio, audioSec);
 
             isPending = true;
             isProcessing = true;
