@@ -907,6 +907,7 @@
                     silenceCount = 0;
                     speechBuf = [];
                     startRecTimer();
+                    addLog(`🎙️ 連続録音開始 (${ctxRate}Hz→16kHz, 30s窓)`);
                 }
                 speechBuf.push(samples.slice());
                 updateStatusDisplay();
@@ -1303,9 +1304,12 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
         // Fetch-based stream capture: decodes MP3 chunks and feeds PCM to VAD at real-time rate.
         // Requires the stream server to send CORS headers (Access-Control-Allow-Origin: *).
         async function captureRadioStream(url, ctx) {
-            const DECODE_BYTES = 32768; // 32KB ≈ 2s at 128kbps
-            const MAX_QUEUE    = 60;    // ~15s buffer
-            const pcmQueue     = [];
+            const MIN_DECODE_BYTES = 32768;  // start trying at 32KB
+            const MAX_BUF_BYTES    = 524288; // 512KB safety cap
+            const MAX_QUEUE        = 60;
+            const pcmQueue         = [];
+            let firstDecode        = true;
+            let decodeFailCount    = 0;
 
             // Feed one CHUNK_SIZE PCM block per CHUNK_MS tick
             function feedLoop() {
@@ -1321,17 +1325,17 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                 resp = await fetch(url, { signal: radioAbortCtrl.signal });
             } catch (e) {
                 if (e.name === 'AbortError') return;
-                addLog(`❌ fetch失敗: ${e.message} — CORSヘッダーが必要です`);
-                radioStatus.textContent = `接続失敗 (CORS?) — このストリームはブラウザから直接取得できない可能性があります`;
+                addLog(`❌ fetch失敗: ${e.message}`);
+                radioStatus.textContent = `接続失敗 (CORS?) — サーバーがAccess-Control-Allow-Origin:*を返す必要があります`;
                 return;
             }
+            addLog(`📡 接続OK: HTTP ${resp.status}  ${resp.headers.get('content-type') || ''}`);
 
             const reader = resp.body.getReader();
             let rawBuf   = new Uint8Array(0);
 
             try {
                 while (isRadioPlaying) {
-                    // Back-pressure: pause reading if queue is full
                     if (pcmQueue.length >= MAX_QUEUE) {
                         await new Promise(r => setTimeout(r, CHUNK_MS * 8));
                         continue;
@@ -1340,33 +1344,47 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                     const { done, value } = await reader.read();
                     if (done) break;
 
+                    // Append new bytes
                     const tmp = new Uint8Array(rawBuf.length + value.length);
                     tmp.set(rawBuf); tmp.set(value, rawBuf.length);
                     rawBuf = tmp;
 
-                    while (rawBuf.length >= DECODE_BYTES && pcmQueue.length < MAX_QUEUE) {
-                        const chunk = rawBuf.slice(0, DECODE_BYTES);
-                        rawBuf = rawBuf.slice(DECODE_BYTES);
-                        try {
-                            const decoded = await ctx.decodeAudioData(chunk.buffer.slice(0));
-                            // Mix to mono
-                            const ch0 = decoded.getChannelData(0);
-                            let mono = ch0;
-                            if (decoded.numberOfChannels > 1) {
-                                const ch1 = decoded.getChannelData(1);
-                                mono = new Float32Array(ch0.length);
-                                for (let i = 0; i < ch0.length; i++) mono[i] = (ch0[i] + ch1[i]) * 0.5;
-                            }
-                            // Queue native-rate chunks; onAudioChunk will downsample to 16kHz
-                            for (let i = 0; i + CHUNK_SIZE <= mono.length; i += CHUNK_SIZE) {
-                                pcmQueue.push(mono.slice(i, i + CHUNK_SIZE));
-                            }
-                            if (pcmQueue.length > 0) {
-                                radioStatus.textContent = `受信中: ${radioStreamSel.options[radioStreamSel.selectedIndex].text}`;
-                            }
-                        } catch (e) {
-                            // Partial MP3 frame at chunk boundary — expected, skip
+                    // Try to decode accumulated buffer once we have enough data.
+                    // On failure: keep all bytes and accumulate more (handles Ogg/AAC page
+                    // boundaries — unlike fixed-slice approach which discarded on failure).
+                    if (rawBuf.length < MIN_DECODE_BYTES) continue;
+
+                    try {
+                        const decoded = await ctx.decodeAudioData(rawBuf.buffer.slice(0));
+                        rawBuf = new Uint8Array(0); // consumed
+                        decodeFailCount = 0;
+
+                        const ch0 = decoded.getChannelData(0);
+                        let mono = ch0;
+                        if (decoded.numberOfChannels > 1) {
+                            const ch1 = decoded.getChannelData(1);
+                            mono = new Float32Array(ch0.length);
+                            for (let i = 0; i < ch0.length; i++) mono[i] = (ch0[i] + ch1[i]) * 0.5;
                         }
+                        for (let i = 0; i + CHUNK_SIZE <= mono.length; i += CHUNK_SIZE) {
+                            pcmQueue.push(mono.slice(i, i + CHUNK_SIZE));
+                        }
+                        if (firstDecode) {
+                            firstDecode = false;
+                            addLog(`✅ デコード成功: ${decoded.sampleRate}Hz  ${decoded.duration.toFixed(2)}s  ${pcmQueue.length}チャンク`);
+                        }
+                        radioStatus.textContent = `受信中: ${radioStreamSel.options[radioStreamSel.selectedIndex].text}`;
+                    } catch (e) {
+                        decodeFailCount++;
+                        if (decodeFailCount <= 3 || decodeFailCount % 10 === 0) {
+                            addLog(`⚠️ デコード失敗 ${decodeFailCount}回目 (${rawBuf.length}B): ${e.message}`);
+                        }
+                        if (rawBuf.length > MAX_BUF_BYTES) {
+                            addLog(`⚠️ バッファ上限 ${MAX_BUF_BYTES}B — リセット`);
+                            rawBuf = new Uint8Array(0);
+                            decodeFailCount = 0;
+                        }
+                        // else: keep bytes, accumulate more, retry next read
                     }
                 }
             } catch (e) {
