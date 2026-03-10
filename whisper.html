@@ -864,8 +864,9 @@
         function onAudioChunk(rawSamples) {
             // Resample to 16kHz if the AudioContext is running at a different rate
             // (iOS Safari ignores the sampleRate:16000 hint and uses 44100Hz)
-            const samples = audioCtx && audioCtx.sampleRate !== SAMPLE_RATE
-                ? downsample(rawSamples, audioCtx.sampleRate)
+            const ctxRate = (audioCtx && audioCtx.sampleRate) || (radioCtx && radioCtx.sampleRate) || SAMPLE_RATE;
+            const samples = ctxRate !== SAMPLE_RATE
+                ? downsample(rawSamples, ctxRate)
                 : rawSamples;
 
             // update pre-roll ring buffer
@@ -898,6 +899,31 @@
             // Live VAD debug display (visible when settings panel is open)
             vadDebug.textContent =
                 `floor:${noiseFloor.toFixed(4)}  onset:${onsetThresh.toFixed(4)}  offset:${offsetThresh.toFixed(4)}  now:${level.toFixed(4)}`;
+
+            // ── 連続録音モード (ラジオ): VAD閾値を無視してすべて録音し30秒ごとにフラッシュ ──
+            if (isRadioPlaying) {
+                if (!inSpeech) {
+                    inSpeech = true;
+                    silenceCount = 0;
+                    speechBuf = [];
+                    startRecTimer();
+                }
+                speechBuf.push(samples.slice());
+                updateStatusDisplay();
+                // Flush at 30s regardless of silence (use actual context rate)
+                const effectiveRate = ctxRate;
+                const maxChunks = Math.round(30 * effectiveRate / CHUNK_SIZE);
+                if (speechBuf.length >= maxChunks) {
+                    endSpeechSegment();
+                    if (isRadioPlaying) {
+                        inSpeech = true;
+                        silenceCount = 0;
+                        speechBuf = [];
+                        startRecTimer();
+                    }
+                }
+                return;
+            }
 
             if (!inSpeech) {
                 if (level > onsetThresh) {
@@ -1236,11 +1262,14 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
             radioCustomUrlWrap.style.display = radioStreamSel.value === 'custom' ? 'block' : 'none';
         });
 
-        let radioAudio     = null;
-        let radioCtx       = null;
-        let radioAbortCtrl = null;
-        let radioFeedTimer = null;
-        let isRadioPlaying = false;
+        let radioAudio       = null;
+        let radioCtx         = null;
+        let radioAbortCtrl   = null;
+        let radioFeedTimer   = null;
+        let isRadioPlaying   = false;
+        let radioWorkletNode = null;
+        let radioScriptNode  = null;
+        let radioStopResolve = null;
 
         function stopRadioTest() {
             isRadioPlaying = false;
@@ -1248,10 +1277,13 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
             flushBuffer();
             stopRecTimer();
 
-            if (radioAbortCtrl) { radioAbortCtrl.abort(); radioAbortCtrl = null; }
-            if (radioFeedTimer) { clearTimeout(radioFeedTimer); radioFeedTimer = null; }
-            if (radioAudio)     { radioAudio.pause(); radioAudio.src = ''; radioAudio = null; }
-            if (radioCtx)       { radioCtx.close().catch(() => {}); radioCtx = null; }
+            if (radioStopResolve)  { radioStopResolve(); radioStopResolve = null; }
+            if (radioWorkletNode)  { try { radioWorkletNode.disconnect(); } catch(_){} radioWorkletNode = null; }
+            if (radioScriptNode)   { try { radioScriptNode.disconnect(); }  catch(_){} radioScriptNode  = null; }
+            if (radioAbortCtrl)    { radioAbortCtrl.abort(); radioAbortCtrl = null; }
+            if (radioFeedTimer)    { clearTimeout(radioFeedTimer); radioFeedTimer = null; }
+            if (radioAudio)        { radioAudio.pause(); radioAudio.src = ''; radioAudio = null; }
+            if (radioCtx)          { radioCtx.close().catch(() => {}); radioCtx = null; }
 
             inSpeech = false; silenceCount = 0; speechBuf = []; preRoll = [];
             smoothedRms = 0;
@@ -1361,8 +1393,9 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                 radioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
                 await radioCtx.resume();
 
-                // <audio> for audible playback (no crossOrigin needed)
+                // crossOrigin='anonymous' required for createMediaElementSource (CORS)
                 radioAudio = new Audio();
+                radioAudio.crossOrigin = 'anonymous';
                 radioAudio.src = streamUrl;
                 radioAudio.volume = 0.6;
 
@@ -1371,21 +1404,52 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                 smoothedRms = 0; noiseFloor = MANUAL_FLOOR;
                 isListening = true;
                 isRadioPlaying = true;
-                CHUNK_MS = CHUNK_SIZE / SAMPLE_RATE * 1000;
 
-                radioAudio.play().catch(() => {}); // play for ears (may fail silently on iOS without interaction)
+                await radioAudio.play();
+                CHUNK_MS = CHUNK_SIZE / radioCtx.sampleRate * 1000;
+                addLog(`🔊 RadioCtx: ${radioCtx.sampleRate}Hz, CHUNK_MS=${CHUNK_MS.toFixed(1)}ms`);
 
-                setStatus('ラジオ受信中…', 'listening');
+                setStatus('ラジオ受信中… (連続録音)', 'listening');
                 radioTestBtn.textContent = '⏹ 停止';
                 radioTestBtn.style.background = 'var(--accent)';
                 radioTestBtn.style.color = '#fff';
-                radioStatus.textContent = '接続中…';
+                radioStatus.textContent = '連続録音モード — 30秒ごとにWhisperへ送信';
                 volWrap.classList.add('visible');
                 recordBtn.disabled = true;
-                addLog(`✅ ラジオ受信開始 — VAD/Whisperパイプラインへ送信`);
 
-                // Start capture (fetch-based, requires CORS)
-                await captureRadioStream(streamUrl, radioCtx);
+                // Tap PCM from the playing audio element via Web Audio API
+                const mediaSource = radioCtx.createMediaElementSource(radioAudio);
+                mediaSource.connect(radioCtx.destination); // keep audio audible
+
+                let tapped = false;
+                if (radioCtx.audioWorklet) {
+                    try {
+                        const blobUrl = buildWorkletBlob(CHUNK_SIZE);
+                        await radioCtx.audioWorklet.addModule(blobUrl);
+                        URL.revokeObjectURL(blobUrl);
+                        radioWorkletNode = new AudioWorkletNode(radioCtx, 'chunk-processor');
+                        radioWorkletNode.port.onmessage = (e) => {
+                            if (isRadioPlaying) onAudioChunk(e.data);
+                        };
+                        mediaSource.connect(radioWorkletNode);
+                        tapped = true;
+                        addLog('✅ AudioWorklet でPCMキャプチャ開始 (連続録音モード)');
+                    } catch (e) {
+                        addLog(`⚠️ AudioWorklet失敗 (${e.message}) → ScriptProcessorへフォールバック`);
+                    }
+                }
+                if (!tapped) {
+                    radioScriptNode = radioCtx.createScriptProcessor(CHUNK_SIZE, 1, 1);
+                    radioScriptNode.onaudioprocess = (e) => {
+                        if (isRadioPlaying) onAudioChunk(e.inputBuffer.getChannelData(0).slice());
+                    };
+                    mediaSource.connect(radioScriptNode);
+                    radioScriptNode.connect(radioCtx.destination);
+                    addLog('✅ ScriptProcessor でPCMキャプチャ開始 (連続録音モード)');
+                }
+
+                // Hold until user stops
+                await new Promise(resolve => { radioStopResolve = resolve; });
 
             } catch (err) {
                 addLog(`❌ ラジオ接続失敗: ${err.message}`);
