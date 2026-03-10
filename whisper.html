@@ -974,9 +974,12 @@
             const rawSec = seg.reduce((a, c) => a + c.length, 0) / SAMPLE_RATE;
 
             // Trim trailing silence so Whisper receives clean audio
-            const trimThresh = Math.max(MANUAL_FLOOR * 0.6, noiseFloor * OFFSET_MULT);
-            while (seg.length > MIN_SPEECH_CHUNKS && rms(seg[seg.length - 1]) < trimThresh) {
-                seg.pop();
+            // (skip in radio continuous mode — fixed 30s windows need no trim)
+            if (!isRadioPlaying) {
+                const trimThresh = Math.max(MANUAL_FLOOR * 0.6, noiseFloor * OFFSET_MULT);
+                while (seg.length > MIN_SPEECH_CHUNKS && rms(seg[seg.length - 1]) < trimThresh) {
+                    seg.pop();
+                }
             }
             const trimSec = seg.reduce((a, c) => a + c.length, 0) / SAMPLE_RATE;
 
@@ -1390,7 +1393,7 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
             addLog(`📻 ラジオ接続: ${streamUrl}`);
 
             try {
-                radioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+                radioCtx = new (window.AudioContext || window.webkitAudioContext)(); // native rate; downsample in onAudioChunk
                 await radioCtx.resume();
 
                 // crossOrigin='anonymous' required for createMediaElementSource (CORS)
