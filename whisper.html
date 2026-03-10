@@ -214,7 +214,8 @@
                     <div class="controls">
                         <button class="btn-record" id="recordBtn" disabled>🎙️ Start listening</button>
                         <button class="btn-send" id="sendBtn" disabled>送信</button>
-                        <button id="sampleBtn" style="font-size:0.8rem;padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;color:var(--fg);" disabled title="JFK speech sample (11s English)">▶ Sample</button>
+                        <button id="sampleBtn" style="font-size:0.8rem;padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;color:var(--fg);" disabled title="JFK speech sample (11s) — direct to Whisper">▶ Sample</button>
+                        <button id="sampleLongBtn" style="font-size:0.8rem;padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;color:var(--fg);" disabled title="JFK ×5 (57s) — through VAD pipeline to test segmentation">▶ Long</button>
                     </div>
                     <button id="clearBtn" class="clear-button" type="button">Clear</button>
                 </div>
@@ -568,6 +569,7 @@
                 setStatus('Ready — tap Start to listen', 'listening');
                 recordBtn.disabled = false;
                 sampleBtn.disabled = false;
+                sampleLongBtn.disabled = false;
                 setTimeout(() => progressBar.classList.remove('visible'), 800);
             } catch (err) {
                 console.error(err);
@@ -959,6 +961,52 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                 console.error(e);
             } finally {
                 sampleBtn.disabled = false;
+            }
+        });
+
+        // ── Long sample: feed through VAD pipeline to test segmentation ────────
+        // JFK ×5 with 0.5s silence between each repeat (~57s total)
+        sampleLongBtn.addEventListener('click', async () => {
+            if (!transcriber) { addLog('⚠️ モデル未ロード'); return; }
+            if (isListening) { addLog('⚠️ 録音中は使用不可'); return; }
+            sampleLongBtn.disabled = true;
+            sampleLongBtn.textContent = '⏳ Long';
+            addLog('📂 sample_en_long.wav を読み込み中…');
+            try {
+                const resp = await fetch('sample_en_long.wav');
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const arrayBuf = await resp.arrayBuffer();
+
+                // Decode at 16kHz
+                const decCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+                const decoded = await decCtx.decodeAudioData(arrayBuf);
+                decCtx.close();
+
+                const ch0 = decoded.getChannelData(0);
+                const dur = (ch0.length / SAMPLE_RATE).toFixed(1);
+                addLog(`✅ 読み込み完了: ${dur}s — VADパイプラインへ送信 (実時間より速く再生)`);
+
+                // Feed audio into VAD in CHUNK_SIZE pieces with a small delay
+                // so the event loop can process transcriptions between chunks.
+                // We use 4× real-time speed (delay = CHUNK_MS/4).
+                noiseFloor = 0.010; // reset noise floor for simulated stream
+                const totalChunks = Math.ceil(ch0.length / CHUNK_SIZE);
+                for (let i = 0; i < totalChunks; i++) {
+                    const start = i * CHUNK_SIZE;
+                    const chunk = ch0.slice(start, start + CHUNK_SIZE);
+                    onAudioChunk(chunk);
+                    // Yield every 8 chunks to keep UI responsive
+                    if (i % 8 === 7) await new Promise(r => setTimeout(r, 0));
+                }
+                // Flush any remaining speech
+                if (inSpeech) endSpeechSegment();
+                addLog(`📤 全チャンク送信完了 (${totalChunks}チャンク)`);
+            } catch (e) {
+                addLog(`❌ ロング読み込み失敗: ${e.message}`);
+                console.error(e);
+            } finally {
+                sampleLongBtn.disabled = false;
+                sampleLongBtn.textContent = '▶ Long';
             }
         });
 
