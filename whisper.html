@@ -278,20 +278,25 @@
         <details style="font-size:0.85rem;">
             <summary style="cursor:pointer;color:var(--muted);user-select:none;padding:4px 0;">📻 ストリーミングラジオで試す</summary>
             <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px;">
-                <div style="font-size:0.78rem;color:var(--muted);">インターネットラジオを音源として VAD → Whisper パイプラインをテストします。音楽ストリームではVAD検出は動きますが文字起こしは意味をなしません。</div>
+                <div style="font-size:0.78rem;color:var(--muted);">VAD → Whisper パイプラインをラジオ音源でテストします。<strong>CORS必須</strong>: サーバーが <code>Access-Control-Allow-Origin: *</code> を返す局のみ動作します。</div>
                 <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
                     <select id="radioStreamSelect" style="flex:1;min-width:180px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--fg);font-size:0.85rem;">
-                        <optgroup label="トーク・ニュース">
-                            <option value="https://npr-ice.streamguys1.com/live.mp3">NPR News Now (24/7 ニュース)</option>
-                            <option value="https://wamu.streamguys1.com/wamu.mp3">WAMU 88.5 NPR Washington DC</option>
-                            <option value="https://kcrw.streamguys1.com/kcrw_internet_radio.mp3">KCRW (Public Radio)</option>
+                        <optgroup label="トーク・ニュース (CORS確認済み/期待)">
+                            <option value="https://icecast.radiofrance.fr/franceinfo-midfi.mp3">France Info – ニュース (仏語)</option>
+                            <option value="https://icecast.radiofrance.fr/franceinter-midfi.mp3">France Inter – トーク/音楽 (仏語)</option>
+                            <option value="https://st01.sslstream.dlf.de/dlf/01/128/mp3/stream.mp3">Deutschlandfunk – ニュース (独語)</option>
                         </optgroup>
-                        <optgroup label="音楽（CORSテスト用）">
+                        <optgroup label="音楽 (CORSテスト用)">
+                            <option value="https://ice2.somafm.com/groovesalad-128-mp3">SomaFM – Groove Salad ✓動作確認</option>
                             <option value="https://stream.radioparadise.com/mp3-128">Radio Paradise</option>
-                            <option value="https://ice2.somafm.com/groovesalad-128-mp3">SomaFM – Groove Salad</option>
+                            <option value="https://ice1.somafm.com/illstreet-128-mp3">SomaFM – Ill Street Blues</option>
                         </optgroup>
+                        <option value="custom">── カスタムURL ──</option>
                     </select>
                     <button id="radioTestBtn" style="padding:6px 16px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--fg);font-size:0.85rem;cursor:pointer;white-space:nowrap;">▶ 開始</button>
+                </div>
+                <div id="radioCustomUrlWrap" style="display:none;">
+                    <input id="radioCustomUrl" type="url" placeholder="https://example.com/stream.mp3" style="width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--fg);font-size:0.85rem;">
                 </div>
                 <div id="radioStatus" style="font-size:0.78rem;color:var(--muted);min-height:1.2em;"></div>
             </div>
@@ -1220,9 +1225,15 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
         renderDisplay();
 
         // ── Radio stream test ─────────────────────────────────────────────────
-        const radioTestBtn   = document.getElementById('radioTestBtn');
-        const radioStreamSel = document.getElementById('radioStreamSelect');
-        const radioStatus    = document.getElementById('radioStatus');
+        const radioTestBtn       = document.getElementById('radioTestBtn');
+        const radioStreamSel     = document.getElementById('radioStreamSelect');
+        const radioStatus        = document.getElementById('radioStatus');
+        const radioCustomUrlWrap = document.getElementById('radioCustomUrlWrap');
+        const radioCustomUrl     = document.getElementById('radioCustomUrl');
+
+        radioStreamSel.addEventListener('change', () => {
+            radioCustomUrlWrap.style.display = radioStreamSel.value === 'custom' ? 'block' : 'none';
+        });
 
         let radioAudio     = null;
         let radioCtx       = null;
@@ -1337,7 +1348,10 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
             if (!transcriber)   { radioStatus.textContent = '⚠️ モデル未ロード'; return; }
             if (isListening)    { radioStatus.textContent = '⚠️ マイク録音中は使用不可'; return; }
 
-            const streamUrl = radioStreamSel.value;
+            const streamUrl = radioStreamSel.value === 'custom'
+                ? radioCustomUrl.value.trim()
+                : radioStreamSel.value;
+            if (!streamUrl) { radioStatus.textContent = '⚠️ URLを入力してください'; return; }
             radioStatus.textContent = '接続中…';
             radioTestBtn.disabled = true;
             addLog(`📻 ラジオ接続: ${streamUrl}`);
