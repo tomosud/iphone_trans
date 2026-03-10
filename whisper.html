@@ -780,6 +780,7 @@
                 addLog(`📥 キュー追加: 音声 ${sec.toFixed(1)}s (待機 ${transcribeQueue.length}件 / 合計${transcribeQueueSec.toFixed(1)}s)`);
                 return;
             }
+            isProcessing = true; // set before async call to block concurrent entries
             _runTranscribe(chunks);
         }
 
@@ -808,7 +809,7 @@
             storeAudioClip(normalizedAudio, audioSec);
 
             isPending = true;
-            isProcessing = true;
+            // isProcessing already set to true by caller (transcribeSegment or drain)
             renderDisplay();
             stopRecTimer();
             startProcTimer(audioSec);
@@ -848,8 +849,10 @@
             stopProcTimer();
             isProcessing = false;
 
-            // Drain queue: process all queued segments in FIFO order
+            // Drain queue: process all queued segments in FIFO order.
+            // Set isProcessing=true BEFORE the async call to prevent concurrent entries.
             if (transcribeQueue.length > 0) {
+                isProcessing = true;
                 const next = transcribeQueue.shift();
                 const qSec = next.reduce((a, c) => a + c.length, 0) / SAMPLE_RATE;
                 transcribeQueueSec = Math.max(0, transcribeQueueSec - qSec);
@@ -862,9 +865,9 @@
 
         // ── VAD: called with one chunk of audio samples ───────────────────────
         function onAudioChunk(rawSamples) {
-            // Resample to 16kHz if the AudioContext is running at a different rate
-            // (iOS Safari ignores the sampleRate:16000 hint and uses 44100Hz)
-            const ctxRate = (audioCtx && audioCtx.sampleRate) || (radioCtx && radioCtx.sampleRate) || SAMPLE_RATE;
+            // Resample to 16kHz only for microphone input (audioCtx may run at 44100Hz on iOS).
+            // Radio fetch chunks are pre-downsampled to 16kHz in captureRadioStream, skip here.
+            const ctxRate = (audioCtx && audioCtx.sampleRate) || SAMPLE_RATE;
             const samples = ctxRate !== SAMPLE_RATE
                 ? downsample(rawSamples, ctxRate)
                 : rawSamples;
@@ -1301,17 +1304,18 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
             if (!isProcessing) setStatus('Ready — tap Start to listen', 'listening');
         }
 
-        // Fetch-based stream capture: decodes MP3 chunks and feeds PCM to VAD at real-time rate.
+        // Fetch-based stream capture: decodes MP3 chunks and feeds 16kHz PCM to VAD.
         // Requires the stream server to send CORS headers (Access-Control-Allow-Origin: *).
+        // Uses fixed-slice approach: attempt decode every DECODE_BYTES, discard on failure
+        // so bad initial bytes (headers, alignment) are skipped automatically.
         async function captureRadioStream(url, ctx) {
-            const MIN_DECODE_BYTES = 32768;  // start trying at 32KB
-            const MAX_BUF_BYTES    = 524288; // 512KB safety cap
-            const MAX_QUEUE        = 60;
-            const pcmQueue         = [];
-            let firstDecode        = true;
-            let decodeFailCount    = 0;
+            const DECODE_BYTES  = 32768; // 32KB per decode attempt
+            const MAX_QUEUE     = 60;
+            const pcmQueue      = [];
+            let firstDecode     = true;
+            let decodeFailCount = 0;
 
-            // Feed one CHUNK_SIZE PCM block per CHUNK_MS tick
+            // Feed one CHUNK_SIZE 16kHz PCM block per CHUNK_MS tick
             function feedLoop() {
                 if (!isRadioPlaying) return;
                 if (pcmQueue.length > 0) onAudioChunk(pcmQueue.shift());
@@ -1329,7 +1333,7 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                 radioStatus.textContent = `接続失敗 (CORS?) — サーバーがAccess-Control-Allow-Origin:*を返す必要があります`;
                 return;
             }
-            addLog(`📡 接続OK: HTTP ${resp.status}  ${resp.headers.get('content-type') || ''}`);
+            addLog(`📡 接続OK: HTTP ${resp.status}  ${resp.headers.get('content-type') || ''}  icy-metaint=${resp.headers.get('icy-metaint') || 'none'}`);
 
             const reader = resp.body.getReader();
             let rawBuf   = new Uint8Array(0);
@@ -1349,14 +1353,15 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                     tmp.set(rawBuf); tmp.set(value, rawBuf.length);
                     rawBuf = tmp;
 
-                    // Try to decode accumulated buffer once we have enough data.
-                    // On failure: keep all bytes and accumulate more (handles Ogg/AAC page
-                    // boundaries — unlike fixed-slice approach which discarded on failure).
-                    if (rawBuf.length < MIN_DECODE_BYTES) continue;
+                    if (rawBuf.length < DECODE_BYTES) continue;
+
+                    // Slice DECODE_BYTES and advance pointer (discard on failure).
+                    // This skips undecodable header/metadata bytes naturally.
+                    const slice = rawBuf.slice(0, DECODE_BYTES);
+                    rawBuf = rawBuf.slice(DECODE_BYTES);
 
                     try {
-                        const decoded = await ctx.decodeAudioData(rawBuf.buffer.slice(0));
-                        rawBuf = new Uint8Array(0); // consumed
+                        const decoded = await ctx.decodeAudioData(slice.buffer.slice(0));
                         decodeFailCount = 0;
 
                         const ch0 = decoded.getChannelData(0);
@@ -1366,25 +1371,24 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                             mono = new Float32Array(ch0.length);
                             for (let i = 0; i < ch0.length; i++) mono[i] = (ch0[i] + ch1[i]) * 0.5;
                         }
-                        for (let i = 0; i + CHUNK_SIZE <= mono.length; i += CHUNK_SIZE) {
-                            pcmQueue.push(mono.slice(i, i + CHUNK_SIZE));
+                        // Pre-downsample to SAMPLE_RATE (16kHz) so onAudioChunk receives
+                        // correctly-sized chunks regardless of actual context sampleRate.
+                        const pcm16 = decoded.sampleRate !== SAMPLE_RATE
+                            ? downsample(mono, decoded.sampleRate, SAMPLE_RATE)
+                            : mono;
+                        for (let i = 0; i + CHUNK_SIZE <= pcm16.length; i += CHUNK_SIZE) {
+                            pcmQueue.push(pcm16.slice(i, i + CHUNK_SIZE));
                         }
                         if (firstDecode) {
                             firstDecode = false;
-                            addLog(`✅ デコード成功: ${decoded.sampleRate}Hz  ${decoded.duration.toFixed(2)}s  ${pcmQueue.length}チャンク`);
+                            addLog(`✅ デコード成功: ${decoded.sampleRate}Hz → ${SAMPLE_RATE}Hz  ${decoded.duration.toFixed(2)}s  ${pcmQueue.length}チャンク`);
                         }
                         radioStatus.textContent = `受信中: ${radioStreamSel.options[radioStreamSel.selectedIndex].text}`;
                     } catch (e) {
                         decodeFailCount++;
                         if (decodeFailCount <= 3 || decodeFailCount % 10 === 0) {
-                            addLog(`⚠️ デコード失敗 ${decodeFailCount}回目 (${rawBuf.length}B): ${e.message}`);
+                            addLog(`⚠️ デコード失敗 ${decodeFailCount}回目 (スライス${DECODE_BYTES}B): ${e.message}`);
                         }
-                        if (rawBuf.length > MAX_BUF_BYTES) {
-                            addLog(`⚠️ バッファ上限 ${MAX_BUF_BYTES}B — リセット`);
-                            rawBuf = new Uint8Array(0);
-                            decodeFailCount = 0;
-                        }
-                        // else: keep bytes, accumulate more, retry next read
                     }
                 }
             } catch (e) {
@@ -1408,10 +1412,11 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
             addLog(`📻 ラジオ接続: ${streamUrl}`);
 
             try {
-                radioCtx = new (window.AudioContext || window.webkitAudioContext)(); // native rate; downsample in onAudioChunk
+                // sampleRate:16000 makes decodeAudioData work for BBC streams;
+                // captureRadioStream pre-downsamples PCM to 16kHz before queuing.
+                radioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
                 await radioCtx.resume();
 
-                // Audio element for audible playback only (no crossOrigin needed for playback)
                 radioAudio = new Audio();
                 radioAudio.src = streamUrl;
                 radioAudio.volume = 0.6;
@@ -1423,8 +1428,9 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                 isRadioPlaying = true;
 
                 radioAudio.play().catch(() => {});
-                CHUNK_MS = CHUNK_SIZE / radioCtx.sampleRate * 1000;
-                addLog(`🔊 RadioCtx: ${radioCtx.sampleRate}Hz, CHUNK_MS=${CHUNK_MS.toFixed(1)}ms`);
+                // feedLoop timing based on 16kHz chunks from captureRadioStream
+                CHUNK_MS = CHUNK_SIZE / SAMPLE_RATE * 1000; // 256ms
+                addLog(`🔊 RadioCtx: ${radioCtx.sampleRate}Hz (実際: ${SAMPLE_RATE}Hz chunks), CHUNK_MS=${CHUNK_MS.toFixed(1)}ms`);
 
                 setStatus('ラジオ受信中… (連続録音)', 'listening');
                 radioTestBtn.textContent = '⏹ 停止';
