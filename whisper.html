@@ -935,7 +935,7 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
             sampleBtn.disabled = true;
             addLog('📂 sample_en.wav を読み込み中…');
             try {
-                const resp = await fetch('sample_en.wav');
+                const resp = await fetch('sample_en.wav?t=' + Date.now());
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 const arrayBuf = await resp.arrayBuffer();
 
@@ -975,7 +975,7 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
             sampleLongBtn.textContent = '⏳ Long';
             addLog('📂 sample_en_long.wav を読み込み中…');
             try {
-                const resp = await fetch('sample_en_long.wav');
+                const resp = await fetch('sample_en_long.wav?t=' + Date.now());
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 const arrayBuf = await resp.arrayBuffer();
 
