@@ -952,8 +952,8 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                 }
 
                 addLog(`✅ 読み込み完了: ${(audio.length / SAMPLE_RATE).toFixed(2)}s — Whisperへ送信`);
-                // Wrap in a single chunk array and transcribe directly
-                transcribeSegment([audio]);
+                // Call _runTranscribe directly (bypass MIN_SPEECH_CHUNKS guard)
+                _runTranscribe([audio]);
             } catch (e) {
                 addLog(`❌ サンプル読み込み失敗: ${e.message}`);
                 console.error(e);
