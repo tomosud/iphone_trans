@@ -365,11 +365,18 @@
         const PRE_ROLL_CHUNKS   = 4;             // ~1s pre-roll
         const MIN_SPEECH_CHUNKS = 2;             // ignore clips shorter than ~2 chunks
         const MAX_SPEECH_CHUNKS = Math.round(25 * SAMPLE_RATE / CHUNK_SIZE); // 25s auto-flush
+        const ONSET_CHUNKS_NEEDED = 2;           // require 2 consecutive hits before speech start
 
         // Adaptive VAD: noise floor tracks background RMS; onset/offset use multipliers
         const NOISE_ALPHA   = 0.004;   // noise floor adaptation speed (~250 chunks to adapt)
         const ONSET_MULT    = 4.0;     // onset  threshold = noiseFloor × ONSET_MULT
         const OFFSET_MULT   = 2.2;     // offset threshold = noiseFloor × OFFSET_MULT
+
+        // Auto gain control for quiet speech (after manual gain, before VAD/Whisper)
+        const AGC_TARGET_RMS = 0.030;
+        const AGC_MIN_GAIN   = 1.0;
+        const AGC_MAX_GAIN   = 10.0;
+        const AGC_ALPHA      = 0.06;
 
         let MANUAL_FLOOR      = 0.010; // hard minimum floor (from slider)
         let SILENCE_CHUNKS_NEEDED = 6; // ~1.5 s silence to end segment
@@ -725,11 +732,13 @@
 
         // VAD state
         let inSpeech     = false;
+        let onsetCount   = 0;
         let silenceCount = 0;
         let speechBuf    = [];   // Float32Arrays of current speech
         let preRoll      = [];   // ring-buffer before speech onset
         let smoothedRms  = 0;
         let noiseFloor   = 0.010; // adaptive background noise estimate
+        let autoGain     = 1.0;
 
         // Timer state
         let speechStartTime  = 0;
@@ -1016,6 +1025,21 @@
                 samples = gained;
             }
 
+            // Auto gain: lift quiet speech automatically, keep stable with smoothing.
+            const rawLevel = rms(samples);
+            const desiredGain = Math.max(
+                AGC_MIN_GAIN,
+                Math.min(AGC_MAX_GAIN, AGC_TARGET_RMS / Math.max(rawLevel, 0.002))
+            );
+            autoGain = autoGain * (1 - AGC_ALPHA) + desiredGain * AGC_ALPHA;
+            if (autoGain !== 1.0) {
+                const boosted = new Float32Array(samples.length);
+                for (let i = 0; i < samples.length; i++) {
+                    boosted[i] = Math.max(-1, Math.min(1, samples[i] * autoGain));
+                }
+                samples = boosted;
+            }
+
             // update pre-roll ring buffer
             preRoll.push(samples.slice());
             if (preRoll.length > PRE_ROLL_CHUNKS) preRoll.shift();
@@ -1035,6 +1059,8 @@
                 noiseFloor = noiseFloor * (1 - NOISE_ALPHA) + level * NOISE_ALPHA;
                 noiseFloor = Math.max(noiseFloor, MANUAL_FLOOR * 0.3);
             }
+            // Slowly return toward manual floor so VAD does not "stick" too high.
+            noiseFloor = noiseFloor * 0.999 + MANUAL_FLOOR * 0.001;
 
             volFill.className = 'vol-fill' + (level > onsetThresh ? ' active' : '');
 
@@ -1045,12 +1071,13 @@
 
             // Live VAD debug display (visible when settings panel is open)
             vadDebug.textContent =
-                `floor:${noiseFloor.toFixed(4)}  onset:${onsetThresh.toFixed(4)}  offset:${offsetThresh.toFixed(4)}  now:${level.toFixed(4)}`;
+                `floor:${noiseFloor.toFixed(4)}  onset:${onsetThresh.toFixed(4)}  offset:${offsetThresh.toFixed(4)}  now:${level.toFixed(4)}  agc:${autoGain.toFixed(2)}x`;
 
             // ── 連続録音モード (ラジオ): VAD閾値を無視してすべて録音し30秒ごとにフラッシュ ──
             if (isRadioPlaying) {
                 if (!inSpeech) {
                     inSpeech = true;
+                    onsetCount = 0;
                     silenceCount = 0;
                     speechBuf = [];
                     startRecTimer();
@@ -1075,12 +1102,17 @@
 
             if (!inSpeech) {
                 if (level > onsetThresh) {
-                    inSpeech = true;
-                    silenceCount = 0;
-                    speechBuf = [...preRoll];
-                    startRecTimer();
-                    addLog(`🎙️ 発話開始: level=${level.toFixed(4)} onset=${onsetThresh.toFixed(4)} floor=${noiseFloor.toFixed(4)}`);
+                    onsetCount++;
+                    if (onsetCount >= ONSET_CHUNKS_NEEDED) {
+                        inSpeech = true;
+                        onsetCount = 0;
+                        silenceCount = 0;
+                        speechBuf = [...preRoll];
+                        startRecTimer();
+                        addLog(`🎙️ 発話開始: level=${level.toFixed(4)} onset=${onsetThresh.toFixed(4)} floor=${noiseFloor.toFixed(4)} agc=${autoGain.toFixed(2)}x`);
+                    }
                 } else if (isListening) {
+                    onsetCount = 0;
                     // Periodic "why not detecting" log every 3s
                     const now = Date.now();
                     if (now - _lastNonDetectLog > 3000) {
@@ -1114,6 +1146,7 @@
         function endSpeechSegment() {
             if (!inSpeech) return;
             inSpeech = false;
+            onsetCount = 0;
             silenceCount = 0;
             stopRecTimer();
             let seg = speechBuf.slice();
@@ -1226,7 +1259,9 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
 
                 // Reset VAD state
                 inSpeech = false; silenceCount = 0; speechBuf = []; preRoll = [];
+                onsetCount = 0;
                 smoothedRms = 0; noiseFloor = MANUAL_FLOOR;
+                autoGain = 1.0;
                 isListening = true;
 
                 setStatus('Listening…', 'listening');
