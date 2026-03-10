@@ -1404,12 +1404,11 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
         }
 
         // Fetch-based stream capture: decodes MP3 chunks with sync-word alignment.
-        // Falls back to raw decoding if no sync words found (for diagnostic).
         async function captureRadioStream(url, ctx) {
-            const DECODE_BYTES  = 65536; // 64KB per decode attempt (more = more complete frames)
+            const DECODE_BYTES  = 65536; // 64KB per decode attempt
             const MAX_QUEUE     = 60;
             const pcmQueue      = [];
-            let firstDecode     = true;
+            let decodeOk        = 0;   // total successful decodes
             let decodeFailCount = 0;
             let syncLogDone     = false;
 
@@ -1482,6 +1481,7 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
 
                     try {
                         const decoded = await ctx.decodeAudioData(slice.buffer.slice(0));
+                        decodeOk++;
                         decodeFailCount = 0;
 
                         const ch0 = decoded.getChannelData(0);
@@ -1491,26 +1491,25 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                             mono = new Float32Array(ch0.length);
                             for (let i = 0; i < ch0.length; i++) mono[i] = (ch0[i] + ch1[i]) * 0.5;
                         }
-                        // Downsample to 16kHz if context gave a different rate
                         const pcm16 = decoded.sampleRate !== SAMPLE_RATE
                             ? downsample(mono, decoded.sampleRate) : mono;
                         for (let i = 0; i + CHUNK_SIZE <= pcm16.length; i += CHUNK_SIZE)
                             pcmQueue.push(pcm16.slice(i, i + CHUNK_SIZE));
-                        if (firstDecode) {
-                            firstDecode = false;
-                            addLog(`✅ デコード成功: ${decoded.sampleRate}Hz → ${SAMPLE_RATE}Hz  ${decoded.duration.toFixed(2)}s  ${pcmQueue.length}チャンク`);
-                        }
+                        // Log every decode attempt result — tells us if subsequent decodes succeed
+                        if (decodeOk <= 5 || decodeOk % 10 === 0)
+                            addLog(`✅ デコード#${decodeOk}: ${decoded.sampleRate}Hz  ${decoded.duration.toFixed(2)}s  queue:${pcmQueue.length}`);
                         radioStatus.textContent = `受信中: ${radioStreamSel.options[radioStreamSel.selectedIndex].text}`;
                     } catch (e) {
                         decodeFailCount++;
                         if (decodeFailCount <= 5 || decodeFailCount % 20 === 0)
-                            addLog(`⚠️ デコード失敗 ${decodeFailCount}回目 (${DECODE_BYTES}B@sync): ${e.message}`);
+                            addLog(`⚠️ デコード失敗 #${decodeOk + decodeFailCount} (${DECODE_BYTES}B@sync): ${e.message}`);
                     }
                 }
             } catch (e) {
                 if (e.name !== 'AbortError') addLog(`⚠️ ストリーム切断: ${e.message}`);
             } finally {
                 reader.cancel().catch(() => {});
+                addLog(`📊 デコード統計: 成功${decodeOk}回  失敗${decodeFailCount}回`);
             }
         }
 
