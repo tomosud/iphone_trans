@@ -281,10 +281,15 @@
                 <div style="font-size:0.78rem;color:var(--muted);">インターネットラジオを音源として VAD → Whisper パイプラインをテストします。音楽ストリームではVAD検出は動きますが文字起こしは意味をなしません。</div>
                 <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
                     <select id="radioStreamSelect" style="flex:1;min-width:180px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--fg);font-size:0.85rem;">
-                        <option value="https://ice2.somafm.com/groovesalad-128-mp3">SomaFM – Groove Salad (ambient)</option>
-                        <option value="https://ice1.somafm.com/illstreet-128-mp3">SomaFM – Ill Street Blues (jazz)</option>
-                        <option value="https://ice1.somafm.com/indiepop-128-mp3">SomaFM – Indiepop Rocks</option>
-                        <option value="https://ice1.somafm.com/u80s-128-mp3">SomaFM – Underground 80s</option>
+                        <optgroup label="トーク・ニュース">
+                            <option value="https://npr-ice.streamguys1.com/live.mp3">NPR News Now (24/7 ニュース)</option>
+                            <option value="https://wamu.streamguys1.com/wamu.mp3">WAMU 88.5 NPR Washington DC</option>
+                            <option value="https://kcrw.streamguys1.com/kcrw_internet_radio.mp3">KCRW (Public Radio)</option>
+                        </optgroup>
+                        <optgroup label="音楽（CORSテスト用）">
+                            <option value="https://stream.radioparadise.com/mp3-128">Radio Paradise</option>
+                            <option value="https://ice2.somafm.com/groovesalad-128-mp3">SomaFM – Groove Salad</option>
+                        </optgroup>
                     </select>
                     <button id="radioTestBtn" style="padding:6px 16px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--fg);font-size:0.85rem;cursor:pointer;white-space:nowrap;">▶ 開始</button>
                 </div>
@@ -1219,10 +1224,10 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
         const radioStreamSel = document.getElementById('radioStreamSelect');
         const radioStatus    = document.getElementById('radioStatus');
 
-        let radioAudio   = null;
-        let radioCtx     = null;
-        let radioWorklet = null;
-        let radioScript  = null;
+        let radioAudio     = null;
+        let radioCtx       = null;
+        let radioAbortCtrl = null;
+        let radioFeedTimer = null;
         let isRadioPlaying = false;
 
         function stopRadioTest() {
@@ -1231,10 +1236,10 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
             flushBuffer();
             stopRecTimer();
 
-            if (radioWorklet) { radioWorklet.disconnect(); radioWorklet = null; }
-            if (radioScript)  { radioScript.disconnect();  radioScript  = null; }
-            if (radioAudio)   { radioAudio.pause(); radioAudio.src = ''; radioAudio = null; }
-            if (radioCtx)     { radioCtx.close().catch(() => {}); radioCtx = null; }
+            if (radioAbortCtrl) { radioAbortCtrl.abort(); radioAbortCtrl = null; }
+            if (radioFeedTimer) { clearTimeout(radioFeedTimer); radioFeedTimer = null; }
+            if (radioAudio)     { radioAudio.pause(); radioAudio.src = ''; radioAudio = null; }
+            if (radioCtx)       { radioCtx.close().catch(() => {}); radioCtx = null; }
 
             inSpeech = false; silenceCount = 0; speechBuf = []; preRoll = [];
             smoothedRms = 0;
@@ -1246,6 +1251,85 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
             volFill.style.width = '0%';
             recordBtn.disabled = false;
             if (!isProcessing) setStatus('Ready — tap Start to listen', 'listening');
+        }
+
+        // Fetch-based stream capture: decodes MP3 chunks and feeds PCM to VAD at real-time rate.
+        // Requires the stream server to send CORS headers (Access-Control-Allow-Origin: *).
+        async function captureRadioStream(url, ctx) {
+            const DECODE_BYTES = 32768; // 32KB ≈ 2s at 128kbps
+            const MAX_QUEUE    = 60;    // ~15s buffer
+            const pcmQueue     = [];
+
+            // Feed one CHUNK_SIZE PCM block per CHUNK_MS tick
+            function feedLoop() {
+                if (!isRadioPlaying) return;
+                if (pcmQueue.length > 0) onAudioChunk(pcmQueue.shift());
+                radioFeedTimer = setTimeout(feedLoop, CHUNK_MS);
+            }
+            feedLoop();
+
+            radioAbortCtrl = new AbortController();
+            let resp;
+            try {
+                resp = await fetch(url, { signal: radioAbortCtrl.signal });
+            } catch (e) {
+                if (e.name === 'AbortError') return;
+                addLog(`❌ fetch失敗: ${e.message} — CORSヘッダーが必要です`);
+                radioStatus.textContent = `接続失敗 (CORS?) — このストリームはブラウザから直接取得できない可能性があります`;
+                return;
+            }
+
+            const reader = resp.body.getReader();
+            let rawBuf   = new Uint8Array(0);
+
+            try {
+                while (isRadioPlaying) {
+                    // Back-pressure: pause reading if queue is full
+                    if (pcmQueue.length >= MAX_QUEUE) {
+                        await new Promise(r => setTimeout(r, CHUNK_MS * 8));
+                        continue;
+                    }
+
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    const tmp = new Uint8Array(rawBuf.length + value.length);
+                    tmp.set(rawBuf); tmp.set(value, rawBuf.length);
+                    rawBuf = tmp;
+
+                    while (rawBuf.length >= DECODE_BYTES && pcmQueue.length < MAX_QUEUE) {
+                        const chunk = rawBuf.slice(0, DECODE_BYTES);
+                        rawBuf = rawBuf.slice(DECODE_BYTES);
+                        try {
+                            const decoded = await ctx.decodeAudioData(chunk.buffer.slice(0));
+                            // Mix to mono
+                            const ch0 = decoded.getChannelData(0);
+                            let mono = ch0;
+                            if (decoded.numberOfChannels > 1) {
+                                const ch1 = decoded.getChannelData(1);
+                                mono = new Float32Array(ch0.length);
+                                for (let i = 0; i < ch0.length; i++) mono[i] = (ch0[i] + ch1[i]) * 0.5;
+                            }
+                            // Resample if needed
+                            const pcm = decoded.sampleRate !== SAMPLE_RATE
+                                ? downsample(mono, decoded.sampleRate, SAMPLE_RATE)
+                                : mono;
+                            for (let i = 0; i + CHUNK_SIZE <= pcm.length; i += CHUNK_SIZE) {
+                                pcmQueue.push(pcm.slice(i, i + CHUNK_SIZE));
+                            }
+                            if (pcmQueue.length > 0) {
+                                radioStatus.textContent = `受信中: ${radioStreamSel.options[radioStreamSel.selectedIndex].text}`;
+                            }
+                        } catch (e) {
+                            // Partial MP3 frame at chunk boundary — expected, skip
+                        }
+                    }
+                }
+            } catch (e) {
+                if (e.name !== 'AbortError') addLog(`⚠️ ストリーム切断: ${e.message}`);
+            } finally {
+                reader.cancel().catch(() => {});
+            }
         }
 
         radioTestBtn.addEventListener('click', async () => {
@@ -1260,65 +1344,40 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
 
             try {
                 radioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+                await radioCtx.resume();
 
+                // <audio> for audible playback (no crossOrigin needed)
                 radioAudio = new Audio();
-                radioAudio.crossOrigin = 'anonymous';
                 radioAudio.src = streamUrl;
-
-                const source = radioCtx.createMediaElementSource(radioAudio);
-
-                let useWorklet = false;
-                if (radioCtx.audioWorklet) {
-                    try {
-                        const blobUrl = buildWorkletBlob(CHUNK_SIZE);
-                        await radioCtx.audioWorklet.addModule(blobUrl);
-                        URL.revokeObjectURL(blobUrl);
-                        radioWorklet = new AudioWorkletNode(radioCtx, 'chunk-processor');
-                        radioWorklet.port.onmessage = (e) => {
-                            if (isRadioPlaying) onAudioChunk(e.data);
-                        };
-                        source.connect(radioWorklet);
-                        radioWorklet.connect(radioCtx.destination);
-                        useWorklet = true;
-                    } catch (e) {
-                        console.warn('AudioWorklet failed for radio, falling back:', e);
-                    }
-                }
-                if (!useWorklet) {
-                    radioScript = radioCtx.createScriptProcessor(CHUNK_SIZE, 1, 1);
-                    radioScript.onaudioprocess = (e) => {
-                        if (isRadioPlaying) onAudioChunk(new Float32Array(e.inputBuffer.getChannelData(0)));
-                    };
-                    source.connect(radioScript);
-                    radioScript.connect(radioCtx.destination);
-                }
+                radioAudio.volume = 0.6;
 
                 // Reset VAD state
                 inSpeech = false; silenceCount = 0; speechBuf = []; preRoll = [];
                 smoothedRms = 0; noiseFloor = MANUAL_FLOOR;
                 isListening = true;
                 isRadioPlaying = true;
+                CHUNK_MS = CHUNK_SIZE / SAMPLE_RATE * 1000;
 
-                await radioAudio.play();
-
-                CHUNK_MS = CHUNK_SIZE / radioCtx.sampleRate * 1000;
+                radioAudio.play().catch(() => {}); // play for ears (may fail silently on iOS without interaction)
 
                 setStatus('ラジオ受信中…', 'listening');
                 radioTestBtn.textContent = '⏹ 停止';
                 radioTestBtn.style.background = 'var(--accent)';
                 radioTestBtn.style.color = '#fff';
-                radioStatus.textContent = `受信中: ${radioStreamSel.options[radioStreamSel.selectedIndex].text}`;
+                radioStatus.textContent = '接続中…';
                 volWrap.classList.add('visible');
                 recordBtn.disabled = true;
-                addLog(`✅ ラジオ受信開始`);
+                addLog(`✅ ラジオ受信開始 — VAD/Whisperパイプラインへ送信`);
+
+                // Start capture (fetch-based, requires CORS)
+                await captureRadioStream(streamUrl, radioCtx);
 
             } catch (err) {
                 addLog(`❌ ラジオ接続失敗: ${err.message}`);
                 radioStatus.textContent = `エラー: ${err.message}`;
                 console.error(err);
-                isListening = false;
-                if (radioCtx) { radioCtx.close().catch(() => {}); radioCtx = null; }
             } finally {
+                if (isRadioPlaying) stopRadioTest();
                 radioTestBtn.disabled = false;
             }
         });
