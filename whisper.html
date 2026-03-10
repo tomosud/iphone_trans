@@ -265,6 +265,26 @@
         </details>
     </div>
 
+    <!-- Radio stream test -->
+    <div style="max-width:900px;margin:12px auto 28px;padding:0 var(--gap);">
+        <details style="font-size:0.85rem;">
+            <summary style="cursor:pointer;color:var(--muted);user-select:none;padding:4px 0;">📻 ストリーミングラジオで試す</summary>
+            <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px;">
+                <div style="font-size:0.78rem;color:var(--muted);">インターネットラジオを音源として VAD → Whisper パイプラインをテストします。音楽ストリームではVAD検出は動きますが文字起こしは意味をなしません。</div>
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                    <select id="radioStreamSelect" style="flex:1;min-width:180px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--fg);font-size:0.85rem;">
+                        <option value="https://ice2.somafm.com/groovesalad-128-mp3">SomaFM – Groove Salad (ambient)</option>
+                        <option value="https://ice1.somafm.com/illstreet-128-mp3">SomaFM – Ill Street Blues (jazz)</option>
+                        <option value="https://ice1.somafm.com/indiepop-128-mp3">SomaFM – Indiepop Rocks</option>
+                        <option value="https://ice1.somafm.com/u80s-128-mp3">SomaFM – Underground 80s</option>
+                    </select>
+                    <button id="radioTestBtn" style="padding:6px 16px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--fg);font-size:0.85rem;cursor:pointer;white-space:nowrap;">▶ 開始</button>
+                </div>
+                <div id="radioStatus" style="font-size:0.78rem;color:var(--muted);min-height:1.2em;"></div>
+            </div>
+        </details>
+    </div>
+
     <script src="storage.js"></script>
     <script type="module">
         import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
@@ -1109,6 +1129,115 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
         modelSelect.addEventListener('change', loadModel);
 
         renderDisplay();
+
+        // ── Radio stream test ─────────────────────────────────────────────────
+        const radioTestBtn   = document.getElementById('radioTestBtn');
+        const radioStreamSel = document.getElementById('radioStreamSelect');
+        const radioStatus    = document.getElementById('radioStatus');
+
+        let radioAudio   = null;
+        let radioCtx     = null;
+        let radioWorklet = null;
+        let radioScript  = null;
+        let isRadioPlaying = false;
+
+        function stopRadioTest() {
+            isRadioPlaying = false;
+            isListening = false;
+            flushBuffer();
+            stopRecTimer();
+
+            if (radioWorklet) { radioWorklet.disconnect(); radioWorklet = null; }
+            if (radioScript)  { radioScript.disconnect();  radioScript  = null; }
+            if (radioAudio)   { radioAudio.pause(); radioAudio.src = ''; radioAudio = null; }
+            if (radioCtx)     { radioCtx.close().catch(() => {}); radioCtx = null; }
+
+            inSpeech = false; silenceCount = 0; speechBuf = []; preRoll = [];
+            smoothedRms = 0;
+
+            radioTestBtn.textContent = '▶ 開始';
+            radioTestBtn.style.background = 'var(--card)';
+            radioTestBtn.style.color = 'var(--fg)';
+            volWrap.classList.remove('visible');
+            volFill.style.width = '0%';
+            recordBtn.disabled = false;
+            if (!isProcessing) setStatus('Ready — tap Start to listen', 'listening');
+        }
+
+        radioTestBtn.addEventListener('click', async () => {
+            if (isRadioPlaying) { stopRadioTest(); return; }
+            if (!transcriber)   { radioStatus.textContent = '⚠️ モデル未ロード'; return; }
+            if (isListening)    { radioStatus.textContent = '⚠️ マイク録音中は使用不可'; return; }
+
+            const streamUrl = radioStreamSel.value;
+            radioStatus.textContent = '接続中…';
+            radioTestBtn.disabled = true;
+            addLog(`📻 ラジオ接続: ${streamUrl}`);
+
+            try {
+                radioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+
+                radioAudio = new Audio();
+                radioAudio.crossOrigin = 'anonymous';
+                radioAudio.src = streamUrl;
+
+                const source = radioCtx.createMediaElementSource(radioAudio);
+
+                let useWorklet = false;
+                if (radioCtx.audioWorklet) {
+                    try {
+                        const blobUrl = buildWorkletBlob(CHUNK_SIZE);
+                        await radioCtx.audioWorklet.addModule(blobUrl);
+                        URL.revokeObjectURL(blobUrl);
+                        radioWorklet = new AudioWorkletNode(radioCtx, 'chunk-processor');
+                        radioWorklet.port.onmessage = (e) => {
+                            if (isRadioPlaying) onAudioChunk(e.data);
+                        };
+                        source.connect(radioWorklet);
+                        radioWorklet.connect(radioCtx.destination);
+                        useWorklet = true;
+                    } catch (e) {
+                        console.warn('AudioWorklet failed for radio, falling back:', e);
+                    }
+                }
+                if (!useWorklet) {
+                    radioScript = radioCtx.createScriptProcessor(CHUNK_SIZE, 1, 1);
+                    radioScript.onaudioprocess = (e) => {
+                        if (isRadioPlaying) onAudioChunk(new Float32Array(e.inputBuffer.getChannelData(0)));
+                    };
+                    source.connect(radioScript);
+                    radioScript.connect(radioCtx.destination);
+                }
+
+                // Reset VAD state
+                inSpeech = false; silenceCount = 0; speechBuf = []; preRoll = [];
+                smoothedRms = 0; noiseFloor = MANUAL_FLOOR;
+                isListening = true;
+                isRadioPlaying = true;
+
+                await radioAudio.play();
+
+                CHUNK_MS = CHUNK_SIZE / radioCtx.sampleRate * 1000;
+
+                setStatus('ラジオ受信中…', 'listening');
+                radioTestBtn.textContent = '⏹ 停止';
+                radioTestBtn.style.background = 'var(--accent)';
+                radioTestBtn.style.color = '#fff';
+                radioStatus.textContent = `受信中: ${radioStreamSel.options[radioStreamSel.selectedIndex].text}`;
+                volWrap.classList.add('visible');
+                recordBtn.disabled = true;
+                addLog(`✅ ラジオ受信開始`);
+
+            } catch (err) {
+                addLog(`❌ ラジオ接続失敗: ${err.message}`);
+                radioStatus.textContent = `エラー: ${err.message}`;
+                console.error(err);
+                isListening = false;
+                if (radioCtx) { radioCtx.close().catch(() => {}); radioCtx = null; }
+            } finally {
+                radioTestBtn.disabled = false;
+            }
+        });
 
         // ── Test mode (?test in URL) ──────────────────────────────────────────
         if (new URLSearchParams(location.search).has('test')) {
