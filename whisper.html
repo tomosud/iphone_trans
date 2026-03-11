@@ -1,269 +1,1717 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>Light Speech Input</title>
-  <link rel="stylesheet" href="styles.css">
-  <style>
-    .asr-shell {
-      width: min(720px, 100%);
-      min-height: var(--app-height);
-      margin: 0 auto;
-      display: grid;
-      gap: var(--gap);
-      padding: calc(env(safe-area-inset-top, 0px) + 12px) 12px calc(env(safe-area-inset-bottom, 0px) + 12px);
-    }
-    .status-row {
-      display: flex;
-      gap: 8px;
-      align-items: center;
-      margin-bottom: 10px;
-      color: var(--muted);
-      font-size: 0.92rem;
-    }
-    .status-dot {
-      width: 10px;
-      height: 10px;
-      border-radius: 999px;
-      background: #525b67;
-    }
-    .status-dot.active { background: #10b981; }
-    .status-dot.error { background: #ef4444; }
-    .record-button {
-      min-width: 120px;
-      height: 44px;
-      padding: 0 14px;
-      border-radius: 16px;
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      background: #0c8f64;
-      color: white;
-      font: inherit;
-      font-weight: 600;
-      cursor: pointer;
-    }
-    .record-button.active { background: #dc2626; }
-    .meta-row {
-      display: flex;
-      gap: 8px;
-      align-items: center;
-      flex-wrap: wrap;
-    }
-    .meta-label {
-      color: var(--muted);
-      font-size: 0.8rem;
-    }
-    .model-path {
-      color: var(--ink);
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 0.78rem;
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      border-radius: 10px;
-      padding: 4px 8px;
-      background: rgba(20, 22, 25, 0.98);
-    }
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Whisper Local ASR</title>
+    <link rel="stylesheet" href="styles.css">
+    <style>
+        .whisper-shell {
+            width: min(640px, 100%);
+            min-height: var(--app-height);
+            height: auto;
+            margin: 0 auto;
+            display: grid;
+            grid-template-rows: auto 1fr auto;
+            gap: var(--gap);
+            padding:
+                calc(env(safe-area-inset-top, 0px) + 12px)
+                12px
+                calc(env(safe-area-inset-bottom, 0px) + 12px);
+        }
+
+        .model-select label {
+            display: block;
+            font-size: 0.9rem;
+            color: var(--muted);
+            margin-bottom: 8px;
+        }
+
+        .model-select select {
+            width: 100%;
+            padding: 10px 12px;
+            font-size: 1rem;
+            border: 1px solid var(--panel-border);
+            border-radius: var(--radius);
+            background: var(--panel);
+            color: var(--fg);
+            cursor: pointer;
+        }
+
+        .model-select select:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .status-bar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 14px;
+            background: var(--panel);
+            border: 1px solid var(--panel-border);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+        }
+
+        .status-sub {
+            font-size: 0.75rem;
+            color: var(--muted);
+            min-height: 1.2em;
+            opacity: 0;
+            transition: opacity 0.4s ease;
+            letter-spacing: 0.01em;
+        }
+        .status-sub.visible { opacity: 1; }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--muted);
+            flex-shrink: 0;
+            transition: background 0.2s;
+        }
+        .status-dot.loading    { background: #f59e0b; animation: blink 1.2s ease-in-out infinite; }
+        .status-dot.listening  { background: #10b981; }
+        .status-dot.speaking   { background: #ef4444; animation: blink 0.8s ease-in-out infinite; }
+        .status-dot.processing { background: #3b82f6; animation: blink 1.2s ease-in-out infinite; }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50%       { opacity: 0.25; }
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 4px;
+            background: var(--panel-border);
+            border-radius: 2px;
+            overflow: hidden;
+            display: none;
+        }
+        .progress-bar.visible { display: block; }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #3b82f6, #8b5cf6);
+            border-radius: 2px;
+            transition: width 0.3s ease;
+            width: 0%;
+        }
+
+        .vad-graph {
+            margin-top: 6px;
+        }
+
+        .controls { display: flex; gap: 8px; flex: 1; }
+        .btn-record {
+            flex: 1; padding: 14px; font-size: 1rem;
+            border: none; border-radius: var(--radius);
+            cursor: pointer; font-weight: 600;
+            background: #10b981; color: white; transition: all 0.2s;
+        }
+        .btn-record:disabled { opacity: 0.4; cursor: not-allowed; }
+        .btn-record.active { background: #ef4444; }
+        .btn-record.active:not(:disabled):hover { background: #dc2626; }
+        .btn-record:not(.active):not(:disabled):hover { background: #059669; }
+        .btn-send {
+            padding: 14px 18px; font-size: 1rem;
+            border: none; border-radius: var(--radius);
+            cursor: pointer; font-weight: 600;
+            background: #3b82f6; color: white; transition: all 0.2s;
+            display: none;
+        }
+        .btn-send:not(:disabled):hover { background: #2563eb; }
+        .btn-send:disabled { opacity: 0.4; cursor: not-allowed; }
+        .btn-send.visible { display: block; }
+    </style>
 </head>
 <body>
-  <main class="asr-shell">
-    <section class="input-panel">
-      <div class="status-row">
-        <span id="statusDot" class="status-dot"></span>
-        <span id="statusText">Speech API ready</span>
-      </div>
-      <div class="input-row" style="grid-template-columns:auto auto auto; justify-content:start;">
-        <button id="recordBtn" class="record-button" type="button">🎙️ Start</button>
-        <button id="sendBtn" class="clear-button" type="button">送信</button>
-        <button id="clearBtn" class="clear-button" type="button">Clear</button>
-      </div>
-      <div class="meta-row" style="margin-top:10px;">
-        <span class="meta-label">engine</span>
-        <span class="model-path">Web Speech API (lightweight)</span>
-      </div>
-      <div class="meta-row" style="margin-top:10px; align-items:flex-start;">
-        <span class="meta-label">log</span>
-        <pre id="logBox" class="model-path" style="white-space:pre-wrap; line-height:1.35; min-height:80px; max-height:180px; overflow:auto; margin:0; width:min(100%, 560px);"></pre>
-      </div>
-    </section>
+    <div class="whisper-shell">
 
-    <section class="display-panel">
-      <div class="display-box">
-        <div id="finalText" class="final-text" translate="yes"></div>
-      </div>
-    </section>
+        <!-- Top: model + status -->
+        <div style="display:flex;flex-direction:column;gap:10px;">
+            <div class="model-select">
+                <label for="modelSelect">Model:</label>
+                <select id="modelSelect">
+                    <option value="Xenova/whisper-tiny.en">whisper-tiny.en (EN only · fastest · ~75MB)</option>
+                    <option value="Xenova/whisper-base.en">whisper-base.en (EN only · better · ~142MB)</option>
+                    <option value="Xenova/whisper-tiny">whisper-tiny (multilingual · ~75MB)</option>
+                    <option value="Xenova/whisper-base">whisper-base (multilingual · ~142MB)</option>
+                </select>
+            </div>
+            <div class="model-select" style="margin-top:6px;">
+                <label for="langSelect">Language:</label>
+                <select id="langSelect">
+                    <option value="en">English</option>
+                    <option value="ja">日本語</option>
+                    <option value="">Auto detect</option>
+                </select>
+            </div>
 
-    <section class="nav-panel" translate="no">
-      <div style="margin-bottom:8px;">
-        <a class="nav-link-button" href="index.html">← Home</a>
-      </div>
-      <a class="nav-link-button" href="saved.html">Open saved texts</a>
-    </section>
-  </main>
+            <div class="status-bar">
+                <div class="status-dot" id="statusDot"></div>
+                <div style="flex:1;">
+                    <div id="statusText" style="font-size:0.9rem;">Loading model…</div>
+                    <div class="status-sub" id="statusSub"></div>
+                </div>
+            </div>
 
-  <script src="storage.js"></script>
-  <script>
-    const storageApi = window.TransStorage;
-    const finalText = document.getElementById('finalText');
-    const recordBtn = document.getElementById('recordBtn');
-    const clearBtn = document.getElementById('clearBtn');
-    const sendBtn = document.getElementById('sendBtn');
-    const statusText = document.getElementById('statusText');
-    const statusDot = document.getElementById('statusDot');
-    const logBox = document.getElementById('logBox');
+            <div class="progress-bar" id="progressBar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
 
-    let liveText = '';
-    let committedText = '';
-    let isRecording = false;
-    let stopRequested = false;
-    let recognition = null;
 
-    function log(message, detail) {
-      const now = new Date();
-      const ts = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
-      const line = detail ? `[${ts}] ${message} ${detail}` : `[${ts}] ${message}`;
-      logBox.textContent = `${line}\n${logBox.textContent}`.slice(0, 2500);
-      console.log('[speech]', message, detail || '');
-    }
+            <div class="vad-graph">
+                <canvas id="vadCanvas" style="width:100%;height:80px;display:block;border-radius:6px;background:#0d1117;"></canvas>
+                <div style="display:flex;gap:10px;font-size:0.7rem;margin-top:3px;font-family:monospace;flex-wrap:wrap;color:var(--muted);">
+                    <span style="color:#ef4444;">▬ onset</span>
+                    <span style="color:#f59e0b;">▬ offset</span>
+                    <span style="color:#22d3ee;">╌ min floor</span>
+                    <span style="color:#555;">╌ noise floor</span>
+                    <span style="color:#22c55e;">▬ 発話中</span>
+                </div>
+                <div id="vadDebug" style="margin-top:4px;font-size:0.75rem;color:var(--muted);font-family:monospace;letter-spacing:0.02em;"></div>
+            </div>
+        </div>
 
-    function renderText() {
-      finalText.textContent = `${committedText}${liveText}`.trim();
-    }
+        <!-- Middle: controls + display -->
+        <div style="display:flex;flex-direction:column;gap:var(--gap);">
+            <section class="input-panel">
+                <div class="input-row">
+                    <div class="controls">
+                        <button class="btn-record" id="recordBtn" disabled>🎙️ Start listening</button>
+                        <button class="btn-send" id="sendBtn" disabled>送信</button>
+                        <button id="sampleLongBtn" style="font-size:0.8rem;padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;color:var(--fg);" disabled title="JFK ×5 (57s) — VADセグメントテスト">▶ VADテスト</button>
+                    </div>
+                    <button id="clearBtn" class="clear-button" type="button">Clear</button>
+                </div>
+            </section>
 
-    function setStatus(message, state = 'idle') {
-      statusText.textContent = message;
-      statusDot.classList.toggle('active', state === 'active');
-      statusDot.classList.toggle('error', state === 'error');
-      log('status:', message);
-    }
+            <section class="display-panel">
+                <div class="display-box">
+                    <div id="finalText" class="final-text" translate="yes"></div>
+                </div>
+            </section>
+        </div>
 
-    function setupRecognition() {
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (!SpeechRecognition) {
-        setStatus('SpeechRecognition is not supported on this browser', 'error');
-        recordBtn.disabled = true;
-        log('error:', 'SpeechRecognition unavailable');
-        return;
-      }
+        <!-- Nav -->
+        <nav class="nav-panel" translate="no">
+            <div style="margin-bottom:8px;">
+                <a class="nav-link-button" href="index.html">← Home</a>
+            </div>
+            <div>
+                <a id="savedLink" class="nav-link-button" href="saved.html">Open saved texts</a>
+            </div>
+        </nav>
 
-      recognition = new SpeechRecognition();
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.lang = 'en-US';
+    </div>
 
-      recognition.onstart = () => {
-        setStatus('Listening…', 'active');
-        log('recognition', 'onstart');
-      };
+    <!-- Debug: recent audio clips -->
+    <div style="max-width:900px;margin:12px auto 0;padding:0 var(--gap);">
+        <details id="audioClipsDetails" style="font-size:0.82rem;">
+            <summary style="cursor:pointer;color:var(--muted);user-select:none;padding:4px 0;">
+                🔊 最近の音声 <span id="audioClipsBadge" style="background:var(--accent);color:#fff;border-radius:8px;padding:1px 7px;font-size:0.75rem;margin-left:6px;display:none;"></span>
+            </summary>
+            <div id="audioClipsList" style="margin-top:6px;font-size:0.75rem;color:var(--muted);font-family:monospace;">まだ音声なし</div>
+        </details>
+    </div>
 
-      recognition.onresult = (event) => {
-        let interim = '';
-        for (let i = event.resultIndex; i < event.results.length; i += 1) {
-          const transcript = event.results[i][0].transcript;
-          if (event.results[i].isFinal) {
-            committedText = `${committedText} ${transcript}`.trim();
-            log('final:', transcript.trim());
-          } else {
-            interim += transcript;
-          }
+    <!-- Debug log panel -->
+    <div style="max-width:900px;margin:6px auto 0;padding:0 var(--gap);">
+        <details id="logDetails" style="font-size:0.82rem;">
+            <summary style="cursor:pointer;color:var(--muted);user-select:none;padding:4px 0;">
+                🪵 デバッグログ <span id="logBadge" style="background:var(--accent);color:#fff;border-radius:8px;padding:1px 7px;font-size:0.75rem;margin-left:6px;display:none;"></span>
+            </summary>
+            <div style="margin-top:6px;display:flex;gap:8px;align-items:center;">
+                <button id="logCopyBtn" style="font-size:0.8rem;padding:3px 10px;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;color:var(--fg);">📋 コピー</button>
+                <button id="logClearBtn" style="font-size:0.8rem;padding:3px 10px;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;color:var(--muted);">クリア</button>
+                <span id="logCopyMsg" style="font-size:0.75rem;color:var(--accent);display:none;">コピーしました</span>
+            </div>
+            <pre id="logArea" style="margin-top:6px;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px;font-size:0.75rem;font-family:monospace;white-space:pre-wrap;word-break:break-all;max-height:260px;overflow-y:auto;color:var(--fg);line-height:1.5;"></pre>
+        </details>
+    </div>
+
+    <!-- Radio stream test -->
+    <div style="max-width:900px;margin:12px auto 28px;padding:0 var(--gap);">
+        <details style="font-size:0.85rem;">
+            <summary style="cursor:pointer;color:var(--muted);user-select:none;padding:4px 0;">📻 ストリーミングラジオで試す</summary>
+            <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px;">
+                <div style="font-size:0.78rem;color:var(--muted);">VAD → Whisper パイプラインをラジオ音源でテストします。<strong>CORS必須</strong>: サーバーが <code>Access-Control-Allow-Origin: *</code> を返す局のみ動作します。</div>
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                    <select id="radioStreamSelect" style="flex:1;min-width:180px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--fg);font-size:0.85rem;">
+                        <optgroup label="トーク・ニュース (CORS確認済み/期待)">
+                            <option value="https://stream.live.vc.bbcmedia.co.uk/bbc_world_service">BBC World Service – ニュース (英語)</option>
+                            <option value="https://icecast.radiofrance.fr/franceinfo-midfi.mp3">France Info – ニュース (仏語)</option>
+                            <option value="https://icecast.radiofrance.fr/franceinter-midfi.mp3">France Inter – トーク/音楽 (仏語)</option>
+                            <option value="https://st01.sslstream.dlf.de/dlf/01/128/mp3/stream.mp3">Deutschlandfunk – ニュース (独語)</option>
+                        </optgroup>
+                        <optgroup label="音楽 (CORSテスト用)">
+                            <option value="https://ice2.somafm.com/groovesalad-128-mp3">SomaFM – Groove Salad ✓動作確認</option>
+                            <option value="https://stream.radioparadise.com/mp3-128">Radio Paradise</option>
+                            <option value="https://ice1.somafm.com/illstreet-128-mp3">SomaFM – Ill Street Blues</option>
+                        </optgroup>
+                        <option value="custom">── カスタムURL ──</option>
+                    </select>
+                    <button id="radioTestBtn" style="padding:6px 16px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--fg);font-size:0.85rem;cursor:pointer;white-space:nowrap;">▶ 開始</button>
+                </div>
+                <div id="radioCustomUrlWrap" style="display:none;">
+                    <input id="radioCustomUrl" type="url" placeholder="https://example.com/stream.mp3" style="width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--fg);font-size:0.85rem;">
+                </div>
+                <div id="radioStatus" style="font-size:0.78rem;color:var(--muted);min-height:1.2em;"></div>
+            </div>
+        </details>
+    </div>
+
+    <script src="storage.js"></script>
+    <script type="module">
+        import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
+
+        env.allowLocalModels = false;
+        env.useBrowserCache  = true;
+
+        const storageApi = window.TransStorage;
+
+        // ── DOM refs ──────────────────────────────────────────────────────────
+        const modelSelect   = document.getElementById('modelSelect');
+        const statusSub     = document.getElementById('statusSub');
+        const statusDot     = document.getElementById('statusDot');
+        const statusText    = document.getElementById('statusText');
+        const progressBar   = document.getElementById('progressBar');
+        const progressFill  = document.getElementById('progressFill');
+        const recordBtn     = document.getElementById('recordBtn');
+        const finalText     = document.getElementById('finalText');
+        const clearBtn      = document.getElementById('clearBtn');
+        const sendBtn       = document.getElementById('sendBtn');
+        const langSelect    = document.getElementById('langSelect');
+        const vadDebug      = document.getElementById('vadDebug');
+        const logArea       = document.getElementById('logArea');
+        const logBadge      = document.getElementById('logBadge');
+        const logCopyBtn    = document.getElementById('logCopyBtn');
+        const logClearBtn   = document.getElementById('logClearBtn');
+        const logCopyMsg    = document.getElementById('logCopyMsg');
+        const logDetails    = document.getElementById('logDetails');
+
+        // ── VAD parameters ────────────────────────────────────────────────────
+        const SAMPLE_RATE       = 16000;
+        const CHUNK_SIZE        = 4096;          // samples per worklet callback (native rate)
+        let   CHUNK_MS          = CHUNK_SIZE / SAMPLE_RATE * 1000; // updated after AudioContext starts
+        const PRE_ROLL_CHUNKS   = 8;             // ~2s pre-roll
+        const MIN_SPEECH_CHUNKS = 2;             // ignore clips shorter than ~2 chunks
+        // Updated dynamically in startListening() to match actual AudioContext rate.
+        // Target: ~15s of real audio so natural speech isn't cut mid-sentence.
+        let MAX_SPEECH_CHUNKS = Math.round(15 * SAMPLE_RATE / CHUNK_SIZE);
+        const ONSET_CHUNKS_NEEDED = 1;           // single chunk sufficient — avoids missing soft onset
+        const KEEP_TRAILING_CHUNKS = 6;          // keep ~560 ms tail — prevent cutting sentence endings
+
+        // Adaptive VAD: noise floor tracks background RMS; onset/offset use multipliers
+        const NOISE_ALPHA   = 0.006;   // noise floor adaptation speed (faster post-speech readaptation)
+        // ONSET_MULT / OFFSET_MULT are now computed dynamically per chunk (effectiveOnsetMult / effectiveOffsetMult)
+
+        // Auto gain control for quiet speech (after manual gain, before VAD/Whisper)
+        const AGC_TARGET_RMS = 0.020;  // target RMS after gain (was 0.030 — too high, raised gain needed)
+        const AGC_MIN_GAIN   = 0.2;    // allow attenuation for loud mics (下げOK)
+        const AGC_MAX_GAIN   = 5.0;    // allow up to 5× boost for distant/quiet mics (was 8.0 — too aggressive, distorts)
+        const AGC_ALPHA      = 0.05;   // slightly faster gain tracking
+
+        // Warmup: suppress speech detection for the first N chunks after startListening()
+        const WARMUP_CHUNKS = 8; // ~2s calibration (4096/16000 × 8 ≈ 2s); reduced from 20 to avoid long wait before first detection
+        let warmupCount = 0;
+
+        let MANUAL_FLOOR      = 0.005; // hard minimum floor – kept low so adaptive logic dominates
+        // iOS Safari runs AudioContext at 44100 Hz (ignores the 16000 Hz hint), so
+        // CHUNK_MS ≈ 4096/44100*1000 ≈ 93 ms per chunk, not 256 ms.
+        // 10 chunks → ~930 ms on iOS 44100 Hz, ~2.6 s on 16 kHz.
+        // Shorter than the previous 14 so segments are sent more quickly after speech ends.
+        // Dynamically recalculated in startListening() based on actual sample rate.
+        // Target: ~1s of silence regardless of device rate.
+        let SILENCE_CHUNKS_NEEDED = Math.round(1.0 * SAMPLE_RATE / CHUNK_SIZE);
+
+        // ── Adaptive VAD multiplier calculation ──────────────────────────────
+        // Returns onset/offset multipliers that scale with the background noise level.
+        // Lowered range (was 3.0–6.0) so the onset threshold is more easily reached:
+        //   floor=0.005 → onsetMult=2.5, onsetThresh=0.0125
+        //   floor=0.010 → onsetMult=2.25, onsetThresh=0.0225
+        //   floor=0.020 → onsetMult=1.8,  onsetThresh=0.036
+        // With AGC_MAX_GAIN=8, a very quiet mic (raw RMS≈0.003) is boosted to ~0.020,
+        // which clears the 0.0125 threshold comfortably.
+        function computeAdaptiveMults(floor) {
+            const onsetMult  = Math.max(1.8, Math.min(2.5, 1.5 * (0.015 / Math.max(floor, 0.005))));
+            const offsetMult = onsetMult * 0.65;
+            return { onsetMult, offsetMult };
         }
 
-        liveText = interim.trim();
-        renderText();
-        if (committedText) {
-          void storageApi?.saveLatestText(committedText);
+        // ── Persist VAD settings ──────────────────────────────────────────────
+        function saveVadSettings() {
+            localStorage.setItem('whisper_lang', langSelect.value);
+            localStorage.setItem('whisper_model', modelSelect.value);
         }
-      };
+        function loadVadSettings() {
+            const l = localStorage.getItem('whisper_lang');
+            const m = localStorage.getItem('whisper_model');
+            if (l !== null) { langSelect.value = l; }
+            else { langSelect.value = 'en'; }
+            if (m && [...modelSelect.options].some(o => o.value === m)) {
+                modelSelect.value = m;
+            }
+        }
+        loadVadSettings();
 
-      recognition.onerror = (event) => {
-        log('error:', `${event.error || 'unknown'} (${event.message || 'no message'})`);
-        if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-          setStatus('Mic permission denied', 'error');
+        langSelect.addEventListener('change', saveVadSettings);
+        modelSelect.addEventListener('change', saveVadSettings);
+
+        // ── VAD canvas visualization ──────────────────────────────────────────
+        const vadCanvas    = document.getElementById('vadCanvas');
+        const vadCanvasCtx = vadCanvas ? vadCanvas.getContext('2d') : null;
+        const VAD_HIST_LEN = 160;
+        let   vadScaleFixed = 0;   // 0 = auto-fit
+        let   vadScale      = 0.10;
+        const vadLevels     = new Array(VAD_HIST_LEN).fill(0);
+        let   _vadDirty     = false;  // flag: new data since last paint
+        let   _vadRafId     = 0;      // requestAnimationFrame handle
+        let   _vadMaxLevel  = 0.005;  // tracked incrementally (avoid Math.max spread)
+
+        // Schedule a canvas repaint on the next animation frame (non-blocking).
+        // Multiple calls between frames coalesce into one paint.
+        function scheduleVadDraw() {
+            _vadDirty = true;
+            if (!_vadRafId) {
+                _vadRafId = requestAnimationFrame(_drawVadFrame);
+            }
+        }
+
+        function _drawVadFrame() {
+            _vadRafId = 0;
+            if (_vadDirty) {
+                _vadDirty = false;
+                drawVadCanvas();
+            }
+        }
+
+        function drawVadCanvas() {
+            if (!vadCanvasCtx || !vadCanvas) return;
+            const dpr = window.devicePixelRatio || 1;
+            const cssW = vadCanvas.clientWidth;
+            const cssH = vadCanvas.clientHeight || 80;
+            if (vadCanvas.width !== Math.round(cssW * dpr) || vadCanvas.height !== Math.round(cssH * dpr)) {
+                vadCanvas.width  = Math.round(cssW * dpr);
+                vadCanvas.height = Math.round(cssH * dpr);
+            }
+            const w = vadCanvas.width, h = vadCanvas.height;
+            // Auto-fit: use tracked max (avoid spreading 160-element array every frame)
+            if (vadScaleFixed === 0) {
+                vadScale = Math.max(_vadMaxLevel, 0.005) * 1.25;
+            } else {
+                vadScale = vadScaleFixed;
+            }
+            function yOf(v) { return h - Math.max(0, Math.min(v / vadScale, 1)) * h; }
+
+            vadCanvasCtx.fillStyle = '#0d1117';
+            vadCanvasCtx.fillRect(0, 0, w, h);
+
+            // Adaptive onset/offset multipliers (same logic as onAudioChunk)
+            const { onsetMult: _canvasOnsetMult, offsetMult: _canvasOffsetMult } = computeAdaptiveMults(noiseFloor);
+            const onsetT  = Math.max(MANUAL_FLOOR, noiseFloor * _canvasOnsetMult);
+            const offsetT = Math.max(MANUAL_FLOOR * 0.6, noiseFloor * _canvasOffsetMult);
+            const barW = w / VAD_HIST_LEN;
+
+            for (let i = 0; i < vadLevels.length; i++) {
+                const bh = Math.max(0, Math.min(vadLevels[i] / vadScale, 1)) * h;
+                vadCanvasCtx.fillStyle = vadLevels[i] >= onsetT ? '#22c55e' : '#3b82f6';
+                vadCanvasCtx.fillRect(i * barW, h - bh, Math.max(1, barW - 1), bh);
+            }
+
+            vadCanvasCtx.font = `${Math.round(9 * dpr)}px monospace`;
+
+            // noise floor (dark gray dashed)
+            vadCanvasCtx.strokeStyle = '#444'; vadCanvasCtx.lineWidth = dpr;
+            vadCanvasCtx.setLineDash([4 * dpr, 4 * dpr]);
+            vadCanvasCtx.beginPath(); vadCanvasCtx.moveTo(0, yOf(noiseFloor)); vadCanvasCtx.lineTo(w, yOf(noiseFloor)); vadCanvasCtx.stroke();
+
+            // MANUAL_FLOOR (cyan dashed)
+            vadCanvasCtx.strokeStyle = '#22d3ee';
+            vadCanvasCtx.setLineDash([3 * dpr, 3 * dpr]);
+            vadCanvasCtx.beginPath(); vadCanvasCtx.moveTo(0, yOf(MANUAL_FLOOR)); vadCanvasCtx.lineTo(w, yOf(MANUAL_FLOOR)); vadCanvasCtx.stroke();
+
+            // offset (amber solid)
+            vadCanvasCtx.strokeStyle = '#f59e0b'; vadCanvasCtx.lineWidth = dpr;
+            vadCanvasCtx.setLineDash([]);
+            vadCanvasCtx.beginPath(); vadCanvasCtx.moveTo(0, yOf(offsetT)); vadCanvasCtx.lineTo(w, yOf(offsetT)); vadCanvasCtx.stroke();
+
+            // onset (red, thicker)
+            vadCanvasCtx.strokeStyle = '#ef4444'; vadCanvasCtx.lineWidth = 2 * dpr;
+            vadCanvasCtx.beginPath(); vadCanvasCtx.moveTo(0, yOf(onsetT)); vadCanvasCtx.lineTo(w, yOf(onsetT)); vadCanvasCtx.stroke();
+            vadCanvasCtx.lineWidth = dpr; vadCanvasCtx.setLineDash([]);
+
+            // labels
+            const oy = yOf(onsetT);
+            vadCanvasCtx.fillStyle = '#ef4444';
+            vadCanvasCtx.fillText(`onset ${onsetT.toFixed(3)}`, 4 * dpr, Math.max(10 * dpr, oy - 3 * dpr));
+
+            const ofy = yOf(offsetT);
+            vadCanvasCtx.fillStyle = '#f59e0b';
+            vadCanvasCtx.fillText(`offset ${offsetT.toFixed(3)}`, 4 * dpr, Math.min(h - 2 * dpr, ofy + 10 * dpr));
+
+            const floorLabel = `min ${MANUAL_FLOOR.toFixed(3)}`;
+            const lw = vadCanvasCtx.measureText(floorLabel).width;
+            const fy = yOf(MANUAL_FLOOR);
+            vadCanvasCtx.fillStyle = '#22d3ee';
+            vadCanvasCtx.fillText(floorLabel, w - lw - 4 * dpr, Math.max(10 * dpr, fy - 3 * dpr));
+
+            // Scale indicator (top-right)
+            const scaleLabel = `scale ${vadScale.toFixed(3)}${vadScaleFixed === 0 ? ' (auto)' : ''}`;
+            const slw = vadCanvasCtx.measureText(scaleLabel).width;
+            vadCanvasCtx.fillStyle = '#888';
+            vadCanvasCtx.fillText(scaleLabel, w - slw - 4 * dpr, 9 * dpr);
+        }
+
+        // ── Debug log ─────────────────────────────────────────────────────────
+        let _logLines   = [];
+        let _logStart   = Date.now();
+        let _logBadgeN  = 0;
+
+        function addLog(msg) {
+            const t = ((Date.now() - _logStart) / 1000).toFixed(2);
+            const ts = t.padStart(7, ' ');
+            _logLines.push(`[${ts}s] ${msg}`);
+            if (_logLines.length > 300) _logLines.shift();
+            logArea.textContent = _logLines.join('\n');
+            logArea.scrollTop = logArea.scrollHeight;
+            // badge: show unread count when panel is closed
+            if (!logDetails.open) {
+                _logBadgeN++;
+                logBadge.textContent = _logBadgeN > 99 ? '99+' : _logBadgeN;
+                logBadge.style.display = 'inline';
+            }
+        }
+
+        logDetails.addEventListener('toggle', () => {
+            if (logDetails.open) { _logBadgeN = 0; logBadge.style.display = 'none'; }
+        });
+
+        logCopyBtn.addEventListener('click', () => {
+            navigator.clipboard.writeText(_logLines.join('\n')).then(() => {
+                logCopyMsg.style.display = 'inline';
+                setTimeout(() => { logCopyMsg.style.display = 'none'; }, 2000);
+            });
+        });
+
+        logClearBtn.addEventListener('click', () => {
+            _logLines = [];
+            _logStart = Date.now();
+            logArea.textContent = '';
+        });
+
+        // ── Recent audio clips (debug replay) ────────────────────────────────
+        const MAX_AUDIO_CLIPS = 5;
+        let recentAudioClips = []; // { t, sec, audio: Float32Array }
+        const audioClipsList   = document.getElementById('audioClipsList');
+        const audioClipsBadge  = document.getElementById('audioClipsBadge');
+        const audioClipsDetails = document.getElementById('audioClipsDetails');
+        let _audioClipsBadgeN = 0;
+
+        audioClipsDetails.addEventListener('toggle', () => {
+            if (audioClipsDetails.open) {
+                _audioClipsBadgeN = 0;
+                audioClipsBadge.style.display = 'none';
+            }
+        });
+
+        function storeAudioClip(audio, sec) {
+            const t = new Date().toLocaleTimeString('ja-JP');
+            recentAudioClips.push({ t, sec, audio: audio.slice() });
+            if (recentAudioClips.length > MAX_AUDIO_CLIPS) recentAudioClips.shift();
+            renderAudioClips();
+            if (!audioClipsDetails.open) {
+                _audioClipsBadgeN++;
+                audioClipsBadge.textContent = _audioClipsBadgeN > 9 ? '9+' : _audioClipsBadgeN;
+                audioClipsBadge.style.display = 'inline';
+            }
+            // Persist to IndexedDB as WAV for playback across sessions
+            saveClipToDb(t, sec, pcmToWav(audio, SAMPLE_RATE)).catch(() => {});
+        }
+
+        async function renderAudioClips() {
+            audioClipsList.innerHTML = '';
+
+            // In-memory clips (current session)
+            const memClips = [...recentAudioClips].reverse().map((c, i) => ({
+                label: `#${recentAudioClips.length - i}  ${c.t}  ${c.sec.toFixed(2)}s  [mem]`,
+                playFn: btn => playAudioClip(c.audio, btn),
+            }));
+
+            // IndexedDB clips (persisted across sessions)
+            const dbClips = await loadClipsFromDb().then(rows =>
+                [...rows].reverse().map((c, i) => ({
+                    label: `#${rows.length - i}  ${c.t}  ${c.sec.toFixed(2)}s  [db]`,
+                    playFn: btn => playWavClip(c.wav, btn),
+                }))
+            );
+
+            // Merge: memory first (most recent), then db-only entries
+            const all = [...memClips, ...dbClips.filter(d => !memClips.some(m => m.label.startsWith(d.label.slice(0,12))))];
+
+            if (all.length === 0) { audioClipsList.textContent = 'まだ音声なし'; return; }
+            all.forEach(({ label, playFn }) => {
+                const row = document.createElement('div');
+                row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:5px;';
+                const lbl = document.createElement('span');
+                lbl.style.cssText = 'flex:1;color:var(--fg);';
+                lbl.textContent = label;
+                const btn = document.createElement('button');
+                btn.textContent = '▶ 再生';
+                btn.style.cssText = 'font-size:0.8rem;padding:3px 10px;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;color:var(--fg);white-space:nowrap;';
+                btn.addEventListener('click', () => playFn(btn));
+                row.appendChild(lbl); row.appendChild(btn);
+                audioClipsList.appendChild(row);
+            });
+        }
+
+        // Play WAV bytes (Uint8Array from IndexedDB) via an audio element
+        function playWavClip(wavBytes, btn) {
+            btn.disabled = true; btn.textContent = '▶ 再生中…';
+            const blob = new Blob([wavBytes], { type: 'audio/wav' });
+            const url  = URL.createObjectURL(blob);
+            const a    = new Audio(url);
+            a.onended  = () => { URL.revokeObjectURL(url); btn.disabled = false; btn.textContent = '▶ 再生'; };
+            a.onerror  = () => { URL.revokeObjectURL(url); btn.disabled = false; btn.textContent = '▶ 再生';
+                addLog('❌ WAV再生エラー'); };
+            a.play().catch(e => { btn.disabled = false; btn.textContent = '▶ 再生'; addLog(`❌ WAV再生: ${e.message}`); });
+        }
+
+        async function playAudioClip(audioData, btn) {
+            btn.disabled = true;
+            btn.textContent = '▶ 再生中…';
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+                const buf = ctx.createBuffer(1, audioData.length, SAMPLE_RATE);
+                buf.copyToChannel(audioData, 0);
+                const src = ctx.createBufferSource();
+                src.buffer = buf;
+                src.connect(ctx.destination);
+                src.start();
+                src.onended = () => { ctx.close(); btn.disabled = false; btn.textContent = '▶ 再生'; };
+            } catch (e) {
+                btn.disabled = false;
+                btn.textContent = '▶ 再生';
+                addLog(`❌ 再生エラー: ${e.message}`);
+            }
+        }
+
+        // ── PCM → WAV Uint8Array (16-bit, mono, 16kHz) ────────────────────────
+        function pcmToWav(pcm, sr) {
+            const bps = 16, ch = 1, dataLen = pcm.length * 2;
+            const buf = new ArrayBuffer(44 + dataLen);
+            const v = new DataView(buf);
+            const s4 = (o, s) => [0,1,2,3].forEach(i => v.setUint8(o+i, s.charCodeAt(i)));
+            s4(0,'RIFF'); v.setUint32(4, 36+dataLen, true);
+            s4(8,'WAVE'); s4(12,'fmt ');
+            v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,ch,true);
+            v.setUint32(24,sr,true); v.setUint32(28,sr*ch*bps/8,true);
+            v.setUint16(32,ch*bps/8,true); v.setUint16(34,bps,true);
+            s4(36,'data'); v.setUint32(40,dataLen,true);
+            let off = 44;
+            for (let i = 0; i < pcm.length; i++) {
+                const x = Math.max(-1, Math.min(1, pcm[i]));
+                v.setInt16(off, x < 0 ? x * 32768 : x * 32767, true); off += 2;
+            }
+            return new Uint8Array(buf);
+        }
+
+        // ── IndexedDB persistence for radio audio clips ────────────────────────
+        const CLIP_DB = 'radio-clips-v1', CLIP_STORE = 'clips', MAX_PERSISTED = 5;
+        let _clipDb = null;
+        function openClipDb() {
+            if (_clipDb) return Promise.resolve(_clipDb);
+            return new Promise((res, rej) => {
+                const r = indexedDB.open(CLIP_DB, 1);
+                r.onupgradeneeded = e => e.target.result.createObjectStore(CLIP_STORE, { keyPath: 'id', autoIncrement: true });
+                r.onsuccess = e => { _clipDb = e.target.result; res(_clipDb); };
+                r.onerror   = e => rej(e.target.error);
+            });
+        }
+        async function saveClipToDb(t, sec, wav) {
+            try {
+                const db = await openClipDb();
+                const tx = db.transaction(CLIP_STORE, 'readwrite');
+                tx.objectStore(CLIP_STORE).add({ t, sec, wav, savedAt: Date.now() });
+                await new Promise(r => { tx.oncomplete = r; tx.onerror = r; });
+                // Trim to MAX_PERSISTED
+                const keys = await new Promise(r => {
+                    const req = db.transaction(CLIP_STORE,'readonly').objectStore(CLIP_STORE).getAllKeys();
+                    req.onsuccess = () => r(req.result);
+                    req.onerror   = () => r([]);
+                });
+                if (keys.length > MAX_PERSISTED) {
+                    const tx2 = db.transaction(CLIP_STORE, 'readwrite');
+                    keys.slice(0, keys.length - MAX_PERSISTED).forEach(k => tx2.objectStore(CLIP_STORE).delete(k));
+                }
+            } catch (e) { console.warn('saveClipToDb:', e); }
+        }
+        async function loadClipsFromDb() {
+            try {
+                const db = await openClipDb();
+                return new Promise(r => {
+                    const req = db.transaction(CLIP_STORE,'readonly').objectStore(CLIP_STORE).getAll();
+                    req.onsuccess = () => r(req.result);
+                    req.onerror   = () => r([]);
+                });
+            } catch { return []; }
+        }
+
+        // ── State ─────────────────────────────────────────────────────────────
+        const placeholderText = 'Results will appear here as you speak…';
+        let results         = [];
+        let isPending       = false;
+        let transcribeQueue = [];    // pending segments (FIFO)
+        let transcribeQueueSec = 0;  // total audio duration queued
+        let accumulatedText = '';
+        let transcriber     = null;
+        let audioCtx        = null;
+        let mediaStream     = null;
+        let workletNode     = null;
+        let scriptNode      = null;  // fallback
+        let monitorSinkNode = null;  // muted node to keep processing graph alive
+        let isListening     = false;
+        let isProcessing    = false;
+        let _healthTimer    = null;  // periodic AudioContext health check
+        // Track whether the AudioWorklet module has been loaded into the current
+        // AudioContext. Must be reset whenever a new AudioContext is created because
+        // the worklet global scope is per-context; calling addModule() with the same
+        // processor name on an existing context throws "already registered" and causes
+        // the whole worklet path to fail on the 2nd+ recording session.
+        let _workletModuleLoaded = false;
+
+        // VAD state
+        let inSpeech     = false;
+        let onsetCount   = 0;
+        let silenceCount = 0;
+        let speechBuf    = [];   // Float32Arrays of current speech
+        let preRoll      = [];   // ring-buffer before speech onset
+        let smoothedRms  = 0;
+        let noiseFloor   = 0.010; // adaptive background noise estimate
+        let autoGain     = 1.0;
+
+        // Timer state
+        let speechStartTime  = 0;
+        let procStartTime    = 0;
+        let recDisplayTimer  = null;
+        let procDisplayTimer = null;
+
+        // For periodic "why not detecting" log
+        let _lastNonDetectLog = 0;
+
+        // ── Helpers ───────────────────────────────────────────────────────────
+
+        // Box-filter downsample from any rate to SAMPLE_RATE (16kHz).
+        // iOS Safari ignores AudioContext({ sampleRate:16000 }) and runs at 44100Hz,
+        // so we must resample before feeding audio to Whisper.
+        // Using a box (averaging) filter provides implicit anti-aliasing:
+        // each output sample averages exactly `ratio` input samples, attenuating
+        // frequencies above SAMPLE_RATE/2 (8 kHz) before decimation.
+        // This produces significantly cleaner audio for Whisper than linear interpolation.
+        function downsample(samples, fromRate) {
+            if (fromRate === SAMPLE_RATE) return samples;
+            const ratio  = fromRate / SAMPLE_RATE;
+            const outLen = Math.floor(samples.length / ratio);
+            const out    = new Float32Array(outLen);
+            for (let i = 0; i < outLen; i++) {
+                const start = i * ratio;
+                const end   = start + ratio;
+                const iS    = Math.floor(start);
+                const iE    = Math.min(Math.ceil(end), samples.length);
+                let sum = 0;
+                for (let j = iS; j < iE; j++) {
+                    // Fractional weight at boundaries; full weight in the middle
+                    const wLo = j === iS ? (iS + 1 - start) : 1;
+                    const wHi = j === iE - 1 ? (end - (iE - 1)) : 1;
+                    sum += samples[j] * Math.min(wLo, wHi, 1);
+                }
+                out[i] = sum / ratio;
+            }
+            return out;
+        }
+
+        function rms(buf) {
+            let sum = 0;
+            for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+            return Math.sqrt(sum / buf.length);
+        }
+
+        const SUB_MESSAGES = {
+            listening: ['音声を待機中…', '話しかけてください', 'マイク稼働中'],
+            loading:   ['モデルをロード中…', 'しばらくお待ちください', 'キャッシュを確認中…'],
+        };
+        let _subTimer = null;
+        let _subIdx   = 0;
+
+        function stopSubCycle() {
+            clearInterval(_subTimer);
+            _subTimer = null;
+            statusSub.textContent = '';
+            statusSub.classList.remove('visible');
+        }
+
+        function startSubCycle(state) {
+            stopSubCycle();
+            const msgs = SUB_MESSAGES[state];
+            if (!msgs) return;
+            _subIdx = 0;
+            const show = () => {
+                statusSub.classList.remove('visible');
+                setTimeout(() => {
+                    statusSub.textContent = msgs[_subIdx % msgs.length];
+                    statusSub.classList.add('visible');
+                    _subIdx++;
+                }, 80);
+            };
+            show();
+            _subTimer = setInterval(show, 3000);
+        }
+
+        function setStatus(text, state = '') {
+            statusText.textContent = text;
+            statusDot.className = 'status-dot' + (state ? ' ' + state : '');
+            startSubCycle(state);
+        }
+
+        // ── Status display: single source of truth ────────────────────────────
+        // Called from procDisplayTimer (200ms) and onAudioChunk (~256ms).
+        // Shows both processing and recording state simultaneously.
+        let _procAudioLabel = '';
+
+        function updateStatusDisplay() {
+            const parts = [];
+            if (isProcessing) {
+                const procElapsed = ((Date.now() - procStartTime) / 1000).toFixed(1);
+                const queueInfo = transcribeQueue.length > 0
+                    ? ` | 待機: ${transcribeQueue.length}件 / 音声${transcribeQueueSec.toFixed(1)}s`
+                    : '';
+                parts.push(`⚙️ 処理中 ${procElapsed}s${_procAudioLabel}${queueInfo}`);
+            }
+            if (inSpeech) {
+                const recElapsed = ((Date.now() - speechStartTime) / 1000).toFixed(1);
+                if (silenceCount > 0) {
+                    const silSec = (silenceCount * CHUNK_MS / 1000).toFixed(1);
+                    const limSec = (SILENCE_CHUNKS_NEEDED * CHUNK_MS / 1000).toFixed(1);
+                    parts.push(`🔴 録音 ${recElapsed}s (無音 ${silSec}/${limSec}s)`);
+                } else {
+                    parts.push(`🔴 録音中 ${recElapsed}s`);
+                }
+            }
+            if (parts.length > 0) {
+                statusText.textContent = parts.join('  |  ');
+                statusDot.className = isProcessing ? 'status-dot processing' : 'status-dot speaking';
+            }
+        }
+
+        function startRecTimer() {
+            speechStartTime = Date.now();
+            stopSubCycle();
+            updateStatusDisplay();
+        }
+
+        function stopRecTimer() {}
+
+        function startProcTimer(audioSec) {
+            clearInterval(procDisplayTimer);
+            procStartTime = Date.now();
+            _procAudioLabel = audioSec ? ` (音声${audioSec.toFixed(1)}s)` : '';
+            stopSubCycle();
+            updateStatusDisplay();
+            procDisplayTimer = setInterval(updateStatusDisplay, 200);
+        }
+
+        function stopProcTimer() {
+            clearInterval(procDisplayTimer);
+            procDisplayTimer = null;
+        }
+
+        const MAX_DISPLAY = 5;  // show last N results; older ones are still saved
+
+        function renderDisplay() {
+            if (results.length === 0 && !isPending) {
+                finalText.textContent = placeholderText;
+            } else {
+                const visible = results.slice(-MAX_DISPLAY);
+                const parts = [...visible];
+                if (isPending) parts.push('…');
+                finalText.textContent = parts.join('\n\n');
+            }
+            finalText.scrollTop = finalText.scrollHeight;
+        }
+
+        // ── Model loading ─────────────────────────────────────────────────────
+        async function loadModel() {
+            const modelName = modelSelect.value;
+            setStatus('Loading model…', 'loading');
+            progressBar.classList.add('visible');
+            progressFill.style.width = '0%';
+            recordBtn.disabled = true;
+            modelSelect.disabled = true;
+
+            try {
+                transcriber = await pipeline('automatic-speech-recognition', modelName, {
+                    progress_callback: (p) => {
+                        if (p.status === 'progress') {
+                            const pct = Math.round((p.loaded / p.total) * 100);
+                            progressFill.style.width = `${pct}%`;
+                            setStatus(`Downloading… ${pct}%`, 'loading');
+                        } else if (p.status === 'done') {
+                            progressFill.style.width = '100%';
+                        }
+                    }
+                });
+                setStatus('Ready — tap Start to listen', 'listening');
+                recordBtn.disabled = false;
+                document.getElementById('sampleLongBtn').disabled = false;
+                setTimeout(() => progressBar.classList.remove('visible'), 800);
+            } catch (err) {
+                console.error(err);
+                setStatus('Model load failed: ' + err.message, '');
+            }
+            modelSelect.disabled = false;
+        }
+
+        // ── Transcribe a collected speech segment ─────────────────────────────
+        // If already processing, queue the segment and process all segments in order.
+        function transcribeSegment(chunks) {
+            if (!transcriber || chunks.length < MIN_SPEECH_CHUNKS) return;
+            const sec = chunks.reduce((a, c) => a + c.length, 0) / SAMPLE_RATE;
+            if (isProcessing) {
+                transcribeQueue.push(chunks);
+                transcribeQueueSec += sec;
+                addLog(`📥 キュー追加: 音声 ${sec.toFixed(1)}s (待機 ${transcribeQueue.length}件 / 合計${transcribeQueueSec.toFixed(1)}s)`);
+                return;
+            }
+            isProcessing = true; // set before async call to block concurrent entries
+            _runTranscribe(chunks);
+        }
+
+        async function _runTranscribe(chunks) {
+            const totalLen = chunks.reduce((a, c) => a + c.length, 0);
+            const audio = new Float32Array(totalLen);
+            let off = 0;
+            for (const c of chunks) { audio.set(c, off); off += c.length; }
+
+            const audioSec = totalLen / SAMPLE_RATE;
+
+            // RMS-normalize: always normalize to a consistent level for Whisper.
+            // AGC can over-amplify (RMS 0.2-0.4 is too loud → empty results).
+            // Normalize both UP (quiet audio) and DOWN (over-amplified audio).
+            let rmsIn = 0;
+            for (let i = 0; i < audio.length; i++) rmsIn += audio[i] * audio[i];
+            rmsIn = Math.sqrt(rmsIn / audio.length);
+            let normalizedAudio = audio;
+            if (rmsIn > 0.001) {
+                const targetRms = 0.08;
+                const scale = Math.min(Math.max(targetRms / rmsIn, 0.1), 3.0);
+                if (scale < 0.9 || scale > 1.1) { // skip if already near target
+                    normalizedAudio = new Float32Array(audio.length);
+                    for (let i = 0; i < audio.length; i++) {
+                        // Soft limiting with tanh to preserve waveform shape
+                        const x = audio[i] * scale;
+                        normalizedAudio[i] = (x >= -1 && x <= 1) ? x : Math.tanh(x);
+                    }
+                }
+            }
+            storeAudioClip(normalizedAudio, audioSec);
+
+            isPending = true;
+            renderDisplay();
+            stopRecTimer();
+            startProcTimer(audioSec);
+            const isEnOnly = modelSelect.value.includes('.en');
+            const selectedLang = isEnOnly ? 'en' : (langSelect.value || null);
+            const modelName    = modelSelect.value.split('/').pop();
+            addLog(`⚙️ Whisper開始: 音声 ${audioSec.toFixed(2)}s  rms=${rmsIn.toFixed(4)}  model=${modelName}  lang=${selectedLang ?? 'auto'}`);
+
+            const t0 = Date.now();
+            try {
+                // Timeout: abort if Whisper hangs for more than 60s
+                const timeoutMs = Math.max(60000, audioSec * 10000);
+                const transcribePromise = transcriber(normalizedAudio, {
+                    language: selectedLang,
+                    task: 'transcribe',
+                    chunk_length_s: 15,
+                    stride_length_s: 3,
+                });
+                const timeoutPromise = new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('Whisper timeout')), timeoutMs)
+                );
+                const res = await Promise.race([transcribePromise, timeoutPromise]);
+                const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
+                const text = (res.text || '').trim();
+                if (text) {
+                    results.push(text);
+                    accumulatedText = results.join('\n');
+                    void storageApi.saveLatestText(accumulatedText);
+                    addLog(`✅ Whisper完了: ${elapsed}s → "${text.slice(0, 60)}${text.length > 60 ? '…' : ''}"`);
+                } else {
+                    addLog(`⚠️ Whisper完了: ${elapsed}s → 空 (無音 or ノイズのみ?)`);
+                }
+            } catch (err) {
+                const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
+                console.error(err);
+                results.push('⚠️ ' + err.message);
+                addLog(`❌ Whisperエラー: ${elapsed}s → ${err.message}`);
+            } finally {
+                // CRITICAL: always reset state even on error to prevent deadlock
+                isPending = false;
+                stopProcTimer();
+                renderDisplay();
+
+                // Whisper blocks the main thread during inference, which can cause
+                // iOS to suspend the AudioContext.  Resume it immediately.
+                if (audioCtx && audioCtx.state === 'suspended' && isListening) {
+                    addLog('⚠️ AudioContext suspended → resuming');
+                    audioCtx.resume().catch(() => {});
+                }
+                // Kick the rAF loop back to life (it stops while main thread is blocked)
+                scheduleVadDraw();
+
+                // Drain queue
+                if (transcribeQueue.length > 0) {
+                    const next = transcribeQueue.shift();
+                    const qSec = next.reduce((a, c) => a + c.length, 0) / SAMPLE_RATE;
+                    transcribeQueueSec = Math.max(0, transcribeQueueSec - qSec);
+                    addLog(`▶️ キュードレイン: 音声 ${qSec.toFixed(1)}s を処理開始 (残り ${transcribeQueue.length}件 / ${transcribeQueueSec.toFixed(1)}s)`);
+                    // Yield to browser before next inference so UI can repaint & audio can flow
+                    await new Promise(r => setTimeout(r, 100));
+                    _runTranscribe(next);
+                } else {
+                    isProcessing = false;
+                    if (isListening) setStatus('Listening…', 'listening');
+                }
+            }
+        }
+
+        // ── VAD: called with one chunk of audio samples ───────────────────────
+        function onAudioChunk(rawSamples) {
+            // Resample to 16kHz only for microphone input (audioCtx may run at 44100Hz on iOS).
+            // Radio fetch chunks are pre-downsampled to 16kHz in captureRadioStream, skip here.
+            const ctxRate = (audioCtx && audioCtx.sampleRate) || SAMPLE_RATE;
+            let samples = ctxRate !== SAMPLE_RATE
+                ? downsample(rawSamples, ctxRate)
+                : rawSamples;
+            // Auto gain: lift quiet speech automatically, keep stable with smoothing.
+            // Only update gain when NOT speaking to prevent gain drift during speech,
+            // which would destabilise the audio fed to Whisper.
+            const rawLevel = rms(samples);
+            // Update AGC when signal is quiet (rawLevel < noiseFloor*3) even while
+            // inSpeech=true (continuous mode). This prevents gain freezing permanently
+            // at the warmup value and handles room-noise changes mid-session.
+            if (!inSpeech || rawLevel < noiseFloor * 3) {
+                const desiredGain = Math.max(
+                    AGC_MIN_GAIN,
+                    Math.min(AGC_MAX_GAIN, AGC_TARGET_RMS / Math.max(rawLevel, 0.002))
+                );
+                autoGain = autoGain * (1 - AGC_ALPHA) + desiredGain * AGC_ALPHA;
+            }
+            if (autoGain !== 1.0) {
+                const boosted = new Float32Array(samples.length);
+                for (let i = 0; i < samples.length; i++) {
+                    // Soft limiting with tanh — avoids harsh clipping distortion
+                    // that degrades Whisper accuracy on transients and plosives.
+                    const x = samples[i] * autoGain;
+                    boosted[i] = (x >= -1 && x <= 1) ? x : Math.tanh(x);
+                }
+                samples = boosted;
+            }
+
+            // update pre-roll ring buffer
+            preRoll.push(samples.slice());
+            if (preRoll.length > PRE_ROLL_CHUNKS) preRoll.shift();
+
+            const level = rms(samples);
+            smoothedRms = smoothedRms * 0.7 + level * 0.3;
+
+            // Adaptive onset/offset multipliers: quiet environment → lower mult (higher sensitivity);
+            // noisy environment → higher mult (reduces false positives).
+            const { onsetMult: effectiveOnsetMult, offsetMult: effectiveOffsetMult } = computeAdaptiveMults(noiseFloor);
+
+            const onsetThresh  = Math.max(MANUAL_FLOOR, noiseFloor * effectiveOnsetMult);
+            const offsetThresh = Math.max(MANUAL_FLOOR * 0.6, noiseFloor * effectiveOffsetMult);
+
+            // Adaptive noise floor: update whenever level is clearly below speech range.
+            // In continuous mode inSpeech is always true, so the old !inSpeech guard
+            // would permanently freeze the floor at its warmup value.
+            // Using a level cap (< noiseFloor*4) prevents loud speech from raising the
+            // floor; a slower alpha during speech prevents instability.
+            if (level < noiseFloor * 4) {
+                const noiseAlpha = inSpeech ? NOISE_ALPHA * 0.2 : NOISE_ALPHA;
+                noiseFloor = noiseFloor * (1 - noiseAlpha) + level * noiseAlpha;
+                noiseFloor = Math.max(noiseFloor, MANUAL_FLOOR * 0.3);
+            }
+            // Slowly return toward manual floor so VAD does not "stick" too high.
+            noiseFloor = noiseFloor * 0.999 + MANUAL_FLOOR * 0.001;
+
+            // Warmup: let noiseFloor calibrate before attempting speech detection
+            if (warmupCount < WARMUP_CHUNKS) {
+                warmupCount++;
+                setStatus('🎙️ キャリブレーション中…', 'listening');
+                // VAD canvas (non-blocking via rAF)
+                vadLevels.push(level);
+                if (vadLevels.length > VAD_HIST_LEN) vadLevels.shift();
+                // Track max incrementally: new value may be new max; if we shifted, recalc lazily
+                if (level >= _vadMaxLevel) { _vadMaxLevel = level; }
+                else if (vadLevels.length >= VAD_HIST_LEN) { _vadMaxLevel = 0; for (let _i = 0; _i < vadLevels.length; _i++) { if (vadLevels[_i] > _vadMaxLevel) _vadMaxLevel = vadLevels[_i]; } }
+                scheduleVadDraw();
+                return;
+            }
+
+            // VAD canvas (non-blocking via rAF)
+            vadLevels.push(level);
+            if (vadLevels.length > VAD_HIST_LEN) vadLevels.shift();
+            if (level >= _vadMaxLevel) { _vadMaxLevel = level; }
+            else if (vadLevels.length >= VAD_HIST_LEN) { _vadMaxLevel = 0; for (let _i = 0; _i < vadLevels.length; _i++) { if (vadLevels[_i] > _vadMaxLevel) _vadMaxLevel = vadLevels[_i]; } }
+            scheduleVadDraw();
+
+            // Live VAD debug — shows level as % of onset threshold so it's clear
+            // why speech is / is not being detected.
+            const pct = (level / onsetThresh * 100).toFixed(0);
+            const bar = '█'.repeat(Math.min(20, Math.round(level / onsetThresh * 10))) +
+                        '░'.repeat(Math.max(0, 10 - Math.round(level / onsetThresh * 10)));
+            // warmupCount < WARMUP_CHUNKS returns early above, so this point is always post-warmup.
+            const stateLabel = inSpeech ? '🔴REC' : '👂WAI';
+            vadDebug.textContent =
+                `${stateLabel} ${bar} ${pct}%→onset  now:${level.toFixed(4)} onset:${onsetThresh.toFixed(4)}(×${effectiveOnsetMult.toFixed(1)}) floor:${noiseFloor.toFixed(4)} agc:${autoGain.toFixed(2)}x`;
+
+            // ── 連続録音モード (ラジオ): VAD閾値を無視してすべて録音し30秒ごとにフラッシュ ──
+            if (isRadioPlaying) {
+                if (!inSpeech) {
+                    inSpeech = true;
+                    onsetCount = 0;
+                    silenceCount = 0;
+                    speechBuf = [];
+                    startRecTimer();
+                    addLog(`🎙️ 連続録音開始 (${ctxRate}Hz→16kHz, 15s窓)`);
+                }
+                speechBuf.push(samples.slice());
+                updateStatusDisplay();
+                // Flush at 15s regardless of silence (use actual context rate)
+                const effectiveRate = ctxRate;
+                const maxChunks = Math.round(15 * effectiveRate / CHUNK_SIZE);
+                if (speechBuf.length >= maxChunks) {
+                    endSpeechSegment();
+                    if (isRadioPlaying) {
+                        inSpeech = true;
+                        silenceCount = 0;
+                        speechBuf = [];
+                        startRecTimer();
+                    }
+                }
+                return;
+            }
+
+            // ── Onset detection with pre-roll ─────────────────────────────────
+            // Use onsetThresh (higher) for onset to avoid false triggers from noise.
+            // preRoll captures the beginning of speech even if onset fires slightly late.
+            // offsetThresh (lower) is used only for offset detection below.
+            if (!inSpeech) {
+                if (level < onsetThresh) return; // below onset threshold — wait for speech
+                inSpeech = true;
+                onsetCount = 0;
+                silenceCount = 0;
+                speechBuf = [...preRoll];
+                startRecTimer();
+                addLog(`🎙️ 録音開始: level=${level.toFixed(4)} floor=${noiseFloor.toFixed(4)} agc=${autoGain.toFixed(2)}x`);
+            }
+            {
+                speechBuf.push(samples.slice());
+
+                // Auto-flush before hitting Whisper's 30s context limit
+                if (speechBuf.length >= MAX_SPEECH_CHUNKS) {
+                    endSpeechSegment();
+                    return;
+                }
+
+                if (level < offsetThresh) {
+                    silenceCount++;
+                    updateStatusDisplay();
+                    if (silenceCount >= SILENCE_CHUNKS_NEEDED) {
+                        endSpeechSegment();
+                    }
+                } else {
+                    silenceCount = 0;
+                    updateStatusDisplay();
+                }
+            }
+        }
+
+        function endSpeechSegment() {
+            if (!inSpeech) return;
+            inSpeech = false;
+            onsetCount = 0;
+            silenceCount = 0;
+            stopRecTimer();
+            let seg = speechBuf.slice();
+            speechBuf = [];
+
+            const rawSec = seg.reduce((a, c) => a + c.length, 0) / SAMPLE_RATE;
+
+            // Trim trailing silence so Whisper receives clean audio
+            // (skip in radio continuous mode — fixed 30s windows need no trim)
+            if (!isRadioPlaying) {
+                const { offsetMult: _trimOffsetMult } = computeAdaptiveMults(noiseFloor);
+                const trimThresh = Math.max(MANUAL_FLOOR * 0.6, noiseFloor * _trimOffsetMult);
+                while (seg.length > Math.max(MIN_SPEECH_CHUNKS, KEEP_TRAILING_CHUNKS) && rms(seg[seg.length - 1]) < trimThresh) {
+                    seg.pop();
+                }
+            }
+            const trimSec = seg.reduce((a, c) => a + c.length, 0) / SAMPLE_RATE;
+
+            if (seg.length >= MIN_SPEECH_CHUNKS) {
+                addLog(`🔴 セグメント送信: 生${rawSec.toFixed(2)}s → トリム後${trimSec.toFixed(2)}s → Whisper`);
+                transcribeSegment(seg);
+            } else {
+                addLog(`🔕 セグメント破棄: ${rawSec.toFixed(2)}s → 短すぎ (${seg.length}チャンク < ${MIN_SPEECH_CHUNKS})`);
+            }
+            // Do NOT force-restart here. onAudioChunk will begin a new segment
+            // as soon as audio rises above offsetThresh (with preRoll context).
+        }
+
+        // ── AudioWorklet: inline processor via blob URL ───────────────────────
+        function buildWorkletBlob(chunkSize) {
+            // Use a pre-allocated Float32Array ring buffer instead of Array push/splice
+            // for much better performance (no GC pressure, no array resizing).
+            const code = `
+class ChunkProcessor extends AudioWorkletProcessor {
+    constructor() {
+        super();
+        this._buf = new Float32Array(${chunkSize} * 4);
+        this._len = 0;
+    }
+    process(inputs) {
+        const ch = inputs[0] && inputs[0][0];
+        if (!ch) return true;
+        // Copy input into ring buffer
+        if (this._len + ch.length > this._buf.length) {
+            // Grow buffer (rare)
+            const nb = new Float32Array(Math.max(this._buf.length * 2, this._len + ch.length));
+            nb.set(this._buf.subarray(0, this._len));
+            this._buf = nb;
+        }
+        this._buf.set(ch, this._len);
+        this._len += ch.length;
+        // Emit full chunks
+        while (this._len >= ${chunkSize}) {
+            this.port.postMessage(this._buf.slice(0, ${chunkSize}));
+            // Shift remaining data to front
+            this._buf.copyWithin(0, ${chunkSize}, this._len);
+            this._len -= ${chunkSize};
+        }
+        return true;
+    }
+}
+registerProcessor('chunk-processor', ChunkProcessor);`;
+            return URL.createObjectURL(new Blob([code], { type: 'application/javascript' }));
+        }
+
+        // ── Start / stop listening ────────────────────────────────────────────
+        async function startListening() {
+            try {
+                // Resume or create AudioContext (iOS requires user gesture)
+                if (!audioCtx || audioCtx.state === 'closed') {
+                    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+                    _workletModuleLoaded = false; // new context → module must be re-added
+                }
+                if (audioCtx.state === 'suspended') {
+                    await audioCtx.resume();
+                }
+
+                // Log and adjust for actual sample rate (iOS may ignore sampleRate:16000 hint)
+                const actualRate = audioCtx.sampleRate;
+                CHUNK_MS = CHUNK_SIZE / actualRate * 1000;
+                // Recalculate MAX_SPEECH_CHUNKS based on the real context rate so that
+                // the auto-flush fires at ~6 s of real audio regardless of device rate.
+                // (e.g. iOS 44100 Hz → 65 chunks×93ms≈6s; 16kHz → 23 chunks×256ms≈6s)
+                MAX_SPEECH_CHUNKS = Math.round(15 * actualRate / CHUNK_SIZE);
+                SILENCE_CHUNKS_NEEDED = Math.round(1.0 * actualRate / CHUNK_SIZE);
+                addLog(`🔊 AudioContext: ${actualRate}Hz (target 16000Hz)${actualRate !== SAMPLE_RATE ? ' ⚠️ リサンプリングします' : ' ✅'}  MAX_SPEECH=${MAX_SPEECH_CHUNKS}chunks≈15s  SILENCE=${SILENCE_CHUNKS_NEEDED}chunks≈1s`);
+
+                // Disable browser DSP for lecture recording: echo cancellation
+                // treats far-field speaker audio as "echo" and cancels it.
+                // Whisper handles noise internally so we pass raw audio.
+                mediaStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        channelCount: 1,
+                        echoCancellation: false,
+                        noiseSuppression: false,
+                        autoGainControl: false,
+                    }
+                });
+
+                const source = audioCtx.createMediaStreamSource(mediaStream);
+
+                // Try AudioWorklet first, fall back to deprecated ScriptProcessor.
+                // Guard: addModule() must only be called once per AudioContext instance.
+                // Calling it again with the same processor name throws "already registered"
+                // and breaks all subsequent recording sessions.
+                let useWorklet = false;
+                if (audioCtx.audioWorklet) {
+                    try {
+                        if (!_workletModuleLoaded) {
+                            const blobUrl = buildWorkletBlob(CHUNK_SIZE);
+                            await audioCtx.audioWorklet.addModule(blobUrl);
+                            URL.revokeObjectURL(blobUrl);
+                            _workletModuleLoaded = true;
+                        }
+                        workletNode = new AudioWorkletNode(audioCtx, 'chunk-processor');
+                        workletNode.port.onmessage = (e) => {
+                            if (isListening) onAudioChunk(e.data);
+                        };
+                        source.connect(workletNode);
+                        // Keep processor graph alive without routing microphone audio
+                        // back to speakers (feedback/quality degradation prevention).
+                        monitorSinkNode = audioCtx.createGain();
+                        monitorSinkNode.gain.value = 0;
+                        workletNode.connect(monitorSinkNode);
+                        monitorSinkNode.connect(audioCtx.destination);
+                        useWorklet = true;
+                    } catch (e) {
+                        _workletModuleLoaded = false; // allow retry on next attempt
+                        console.warn('AudioWorklet failed, falling back to ScriptProcessor:', e);
+                        addLog(`⚠️ AudioWorklet失敗 → ScriptProcessorへfallback: ${e.message}`);
+                    }
+                }
+
+                if (!useWorklet) {
+                    // eslint-disable-next-line no-undef
+                    scriptNode = audioCtx.createScriptProcessor(CHUNK_SIZE, 1, 1);
+                    scriptNode.onaudioprocess = (e) => {
+                        if (isListening) {
+                            onAudioChunk(new Float32Array(e.inputBuffer.getChannelData(0)));
+                        }
+                    };
+                    source.connect(scriptNode);
+                    monitorSinkNode = audioCtx.createGain();
+                    monitorSinkNode.gain.value = 0;
+                    scriptNode.connect(monitorSinkNode);
+                    monitorSinkNode.connect(audioCtx.destination);
+                }
+
+                // Reset VAD state
+                inSpeech = false; silenceCount = 0; speechBuf = []; preRoll = [];
+                onsetCount = 0;
+                smoothedRms = 0; noiseFloor = MANUAL_FLOOR;
+                autoGain = 1.0;
+                warmupCount = 0;
+                isListening = true;
+
+                // Periodic health check: detect and recover from iOS AudioContext suspension.
+                // iOS suspends audio when Whisper blocks the main thread or the tab backgrounds.
+                clearInterval(_healthTimer);
+                _healthTimer = setInterval(() => {
+                    if (!isListening || !audioCtx) return;
+                    if (audioCtx.state === 'suspended') {
+                        addLog('⚠️ AudioContext suspended (iOS) → auto-resume');
+                        audioCtx.resume().catch(() => {});
+                    }
+                    // Keep rAF alive (it dies when main thread is blocked by Whisper)
+                    scheduleVadDraw();
+                }, 2000);
+
+                setStatus('🎙️ キャリブレーション中…', 'listening');
+                recordBtn.textContent = '⏹️ Stop listening';
+                recordBtn.classList.add('active');
+                modelSelect.disabled = true;
+                sendBtn.classList.add('visible');
+                sendBtn.disabled = false;
+
+            } catch (err) {
+                console.error(err);
+                setStatus('Mic error: ' + err.message, '');
+            }
+        }
+
+        function flushBuffer() {
+            if (inSpeech && speechBuf.length >= MIN_SPEECH_CHUNKS) {
+                const seg = speechBuf.slice();
+                inSpeech = false;
+                silenceCount = 0;
+                speechBuf = [];
+                transcribeSegment(seg);
+            } else {
+                inSpeech = false;
+                silenceCount = 0;
+                speechBuf = [];
+            }
+        }
+
+        function stopListening() {
+            flushBuffer();
+            isListening = false;
+            stopRecTimer();
+            clearInterval(_healthTimer); _healthTimer = null;
+
+            if (workletNode) { workletNode.disconnect(); workletNode = null; }
+            if (scriptNode)  { scriptNode.disconnect(); scriptNode = null; }
+            if (monitorSinkNode) { monitorSinkNode.disconnect(); monitorSinkNode = null; }
+            if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+            // Suspend rather than close so the AudioContext can be re-used on the
+            // next startListening() call — closing and re-creating it causes failures
+            // on iOS for the second and subsequent recordings.
+            if (audioCtx)    { audioCtx.suspend().catch(() => {}); }
+
+            recordBtn.textContent = '🎙️ Start listening';
+            recordBtn.classList.remove('active');
+            modelSelect.disabled = false;
+            sendBtn.classList.remove('visible');
+            sendBtn.disabled = true;
+            if (!isProcessing) setStatus('Ready — tap Start to listen', 'listening');
+        }
+
+        // ── Event listeners ───────────────────────────────────────────────────
+        recordBtn.addEventListener('click', () => {
+            if (isListening) stopListening();
+            else startListening();
+        });
+
+        sendBtn.addEventListener('click', () => {
+            flushBuffer();
+        });
+
+        async function clearAll() {
+            if (accumulatedText) {
+                await Promise.all([
+                    storageApi.saveLatestText(accumulatedText),
+                    storageApi.archiveText(accumulatedText, 'clear'),
+                ]);
+                accumulatedText = '';
+            }
+            results = [];
+            isPending = false;
+            renderDisplay();
+        }
+
+        clearBtn.addEventListener('click', () => void clearAll());
+
+        // ── VAD segmentation test: feed sample_en_long.wav through the full pipeline ──
+        // JFK speech ×5 with 0.5s silence between repeats (~57s total).
+        // Lets you verify silence-based segmentation without a real microphone.
+        const sampleLongBtn = document.getElementById('sampleLongBtn');
+        sampleLongBtn.addEventListener('click', async () => {
+            if (!transcriber) { addLog('⚠️ モデル未ロード'); return; }
+            if (isListening)  { addLog('⚠️ 録音中は使用不可 — 先に停止してください'); return; }
+            sampleLongBtn.disabled = true;
+            sampleLongBtn.textContent = '⏳ テスト中…';
+            addLog('📂 sample_en_long.wav を読み込み中…');
+            try {
+                const resp = await fetch('sample_en_long.wav?t=' + Date.now());
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const arrayBuf = await resp.arrayBuffer();
+
+                const decCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+                const decoded = await decCtx.decodeAudioData(arrayBuf);
+                decCtx.close();
+
+                const ch0 = decoded.getChannelData(0);
+                addLog(`✅ 読み込み完了: ${(ch0.length / SAMPLE_RATE).toFixed(1)}s — VADパイプラインへ投入`);
+
+                // Reset VAD for a clean simulation run
+                noiseFloor = MANUAL_FLOOR;
+                autoGain = 1.0;
+                warmupCount = WARMUP_CHUNKS; // bypass warmup — file starts immediately
+                inSpeech = false; silenceCount = 0; speechBuf = []; preRoll = [];
+                isListening = true; // needed for endSpeechSegment restart logic
+
+                const totalChunks = Math.ceil(ch0.length / CHUNK_SIZE);
+                for (let i = 0; i < totalChunks; i++) {
+                    const chunk = ch0.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+                    onAudioChunk(chunk);
+                    if (i % 8 === 7) await new Promise(r => setTimeout(r, 0));
+                }
+                if (inSpeech) endSpeechSegment();
+                isListening = false;
+                addLog(`📤 投入完了: ${totalChunks}チャンク`);
+            } catch (e) {
+                addLog(`❌ テスト失敗: ${e.message}`);
+                isListening = false;
+            } finally {
+                sampleLongBtn.disabled = false;
+                sampleLongBtn.textContent = '▶ VADテスト';
+            }
+        });
+
+        const savedLink = document.getElementById('savedLink');
+        savedLink.addEventListener('click', async (e) => {
+            e.preventDefault();
+            if (accumulatedText) {
+                await Promise.all([
+                    storageApi.saveLatestText(accumulatedText),
+                    storageApi.archiveText(accumulatedText, 'clear'),
+                ]);
+            }
+            window.location.href = savedLink.href;
+        });
+
+        modelSelect.addEventListener('change', loadModel);
+
+        renderDisplay();
+
+        // ── Radio stream test ─────────────────────────────────────────────────
+        const radioTestBtn       = document.getElementById('radioTestBtn');
+        const radioStreamSel     = document.getElementById('radioStreamSelect');
+        const radioStatus        = document.getElementById('radioStatus');
+        const radioCustomUrlWrap = document.getElementById('radioCustomUrlWrap');
+        const radioCustomUrl     = document.getElementById('radioCustomUrl');
+
+        radioStreamSel.addEventListener('change', () => {
+            radioCustomUrlWrap.style.display = radioStreamSel.value === 'custom' ? 'block' : 'none';
+        });
+
+        let radioAudio       = null;
+        let radioCtx         = null;
+        let radioAbortCtrl   = null;
+        let radioFeedTimer   = null;
+        let isRadioPlaying   = false;
+        let radioWorkletNode = null;
+        let radioScriptNode  = null;
+        let radioStopResolve = null;
+
+        function stopRadioTest() {
+            isRadioPlaying = false;
+            isListening = false;
+            flushBuffer();
+            stopRecTimer();
+
+            if (radioStopResolve)  { radioStopResolve(); radioStopResolve = null; }
+            if (radioWorkletNode)  { try { radioWorkletNode.disconnect(); } catch(_){} radioWorkletNode = null; }
+            if (radioScriptNode)   { try { radioScriptNode.disconnect(); }  catch(_){} radioScriptNode  = null; }
+            if (radioAbortCtrl)    { radioAbortCtrl.abort(); radioAbortCtrl = null; }
+            if (radioFeedTimer)    { clearTimeout(radioFeedTimer); radioFeedTimer = null; }
+            if (radioAudio)        { radioAudio.pause(); radioAudio.src = ''; radioAudio = null; }
+            if (radioCtx)          { radioCtx.close().catch(() => {}); radioCtx = null; }
+
+            inSpeech = false; silenceCount = 0; speechBuf = []; preRoll = [];
+            smoothedRms = 0;
+
+            radioTestBtn.textContent = '▶ 開始';
+            radioTestBtn.style.background = 'var(--card)';
+            radioTestBtn.style.color = 'var(--fg)';
+            recordBtn.disabled = false;
+            if (!isProcessing) setStatus('Ready — tap Start to listen', 'listening');
+        }
+
+        // Find first valid MPEG audio sync word (0xFF 0xEX with valid header bytes).
+        // Returns byte offset or -1 if not found.
+        function findMp3Sync(buf, start = 0) {
+            for (let i = start; i < buf.length - 3; i++) {
+                if (buf[i] === 0xFF && (buf[i+1] & 0xE0) === 0xE0) {
+                    const bitrateIdx = (buf[i+2] >> 4) & 0xF;
+                    const srateIdx   = (buf[i+2] >> 2) & 0x3;
+                    // 0xF = invalid bitrate, 0x3 = invalid sample rate
+                    if (bitrateIdx > 0 && bitrateIdx < 15 && srateIdx < 3) return i;
+                }
+            }
+            return -1;
+        }
+
+        // Fetch-based stream capture: decodes MP3 chunks with sync-word alignment.
+        async function captureRadioStream(url, ctx) {
+            const DECODE_BYTES  = 65536; // 64KB per decode attempt
+            const MAX_QUEUE     = 60;
+            const pcmQueue      = [];
+            let decodeOk        = 0;   // total successful decodes
+            let decodeFailCount = 0;
+            let syncLogDone     = false;
+
+            function feedLoop() {
+                if (!isRadioPlaying) return;
+                if (pcmQueue.length > 0) onAudioChunk(pcmQueue.shift());
+                radioFeedTimer = setTimeout(feedLoop, CHUNK_MS);
+            }
+            feedLoop();
+
+            radioAbortCtrl = new AbortController();
+            let resp;
+            try {
+                resp = await fetch(url, { signal: radioAbortCtrl.signal });
+            } catch (e) {
+                if (e.name === 'AbortError') return;
+                addLog(`❌ fetch失敗: ${e.message}`);
+                radioStatus.textContent = `接続失敗 (CORS?) — サーバーがAccess-Control-Allow-Origin:*を返す必要があります`;
+                return;
+            }
+            addLog(`📡 接続OK: HTTP ${resp.status}  ${resp.headers.get('content-type') || ''}  icy-metaint=${resp.headers.get('icy-metaint') || 'none'}`);
+
+            const reader = resp.body.getReader();
+            let rawBuf   = new Uint8Array(0);
+
+            try {
+                while (isRadioPlaying) {
+                    if (pcmQueue.length >= MAX_QUEUE) {
+                        await new Promise(r => setTimeout(r, CHUNK_MS * 8));
+                        continue;
+                    }
+
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    const tmp = new Uint8Array(rawBuf.length + value.length);
+                    tmp.set(rawBuf); tmp.set(value, rawBuf.length);
+                    rawBuf = tmp;
+
+                    // Log first 32 bytes as hex on first receive — reveals actual format
+                    if (!syncLogDone && rawBuf.length >= 32) {
+                        const hex = Array.from(rawBuf.slice(0, 32))
+                            .map(b => b.toString(16).padStart(2,'0')).join(' ');
+                        addLog(`🔬 ストリーム先頭bytes: ${hex}`);
+                        const syncPos = findMp3Sync(rawBuf, 0);
+                        addLog(`🔬 MP3 sync位置: ${syncPos >= 0 ? syncPos + 'B目' : '見つからず — MP3以外?'}`);
+                        syncLogDone = true;
+                        // Discard pre-sync garbage bytes once
+                        if (syncPos > 0) {
+                            rawBuf = rawBuf.slice(syncPos);
+                            addLog(`⚠️ sync前 ${syncPos}B を破棄`);
+                        }
+                    }
+
+                    if (rawBuf.length < DECODE_BYTES) continue;
+
+                    // Slice from sync word to ensure frame-aligned decode
+                    const syncPos = findMp3Sync(rawBuf, 0);
+                    if (syncPos < 0) {
+                        // No sync found in entire buffer — not raw MP3, discard
+                        addLog(`⚠️ sync見つからず — バッファ${rawBuf.length}B破棄`);
+                        rawBuf = new Uint8Array(0);
+                        continue;
+                    }
+                    if (syncPos > 0) rawBuf = rawBuf.slice(syncPos); // skip junk before sync
+                    if (rawBuf.length < DECODE_BYTES) continue;
+
+                    const slice = rawBuf.slice(0, DECODE_BYTES);
+                    rawBuf = rawBuf.slice(DECODE_BYTES);
+
+                    try {
+                        const decoded = await ctx.decodeAudioData(slice.buffer.slice(0));
+                        decodeOk++;
+                        decodeFailCount = 0;
+
+                        const ch0 = decoded.getChannelData(0);
+                        let mono = ch0;
+                        if (decoded.numberOfChannels > 1) {
+                            const ch1 = decoded.getChannelData(1);
+                            mono = new Float32Array(ch0.length);
+                            for (let i = 0; i < ch0.length; i++) mono[i] = (ch0[i] + ch1[i]) * 0.5;
+                        }
+                        const pcm16 = decoded.sampleRate !== SAMPLE_RATE
+                            ? downsample(mono, decoded.sampleRate) : mono;
+                        for (let i = 0; i + CHUNK_SIZE <= pcm16.length; i += CHUNK_SIZE)
+                            pcmQueue.push(pcm16.slice(i, i + CHUNK_SIZE));
+                        // Log every decode attempt result — tells us if subsequent decodes succeed
+                        if (decodeOk <= 5 || decodeOk % 10 === 0)
+                            addLog(`✅ デコード#${decodeOk}: ${decoded.sampleRate}Hz  ${decoded.duration.toFixed(2)}s  queue:${pcmQueue.length}`);
+                        radioStatus.textContent = `受信中: ${radioStreamSel.options[radioStreamSel.selectedIndex].text}`;
+                    } catch (e) {
+                        decodeFailCount++;
+                        if (decodeFailCount <= 5 || decodeFailCount % 20 === 0)
+                            addLog(`⚠️ デコード失敗 #${decodeOk + decodeFailCount} (${DECODE_BYTES}B@sync): ${e.message}`);
+                        // Rescue bytes after the second sync word to avoid ~9s audio gap
+                        const nextSync = findMp3Sync(slice, 4);
+                        if (nextSync > 0) {
+                            const rescued = slice.slice(nextSync);
+                            const newBuf = new Uint8Array(rescued.length + rawBuf.length);
+                            newBuf.set(rescued);
+                            newBuf.set(rawBuf, rescued.length);
+                            rawBuf = newBuf;
+                            if (decodeFailCount <= 5 || decodeFailCount % 20 === 0)
+                                addLog(`♻️ ${rescued.length}B救済 (sync@${nextSync})`);
+                        }
+                    }
+                }
+            } catch (e) {
+                if (e.name !== 'AbortError') addLog(`⚠️ ストリーム切断: ${e.message}`);
+            } finally {
+                reader.cancel().catch(() => {});
+                addLog(`📊 デコード統計: 成功${decodeOk}回  失敗${decodeFailCount}回`);
+            }
+        }
+
+        radioTestBtn.addEventListener('click', async () => {
+            if (isRadioPlaying) { stopRadioTest(); return; }
+            if (!transcriber)   { radioStatus.textContent = '⚠️ モデル未ロード'; return; }
+            if (isListening)    { radioStatus.textContent = '⚠️ マイク録音中は使用不可'; return; }
+
+            const streamUrl = radioStreamSel.value === 'custom'
+                ? radioCustomUrl.value.trim()
+                : radioStreamSel.value;
+            if (!streamUrl) { radioStatus.textContent = '⚠️ URLを入力してください'; return; }
+            radioStatus.textContent = '接続中…';
+            radioTestBtn.disabled = true;
+            addLog(`📻 ラジオ接続: ${streamUrl}`);
+
+            try {
+                radioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+                await radioCtx.resume();
+
+                // Separate audio element for audible playback (no crossOrigin needed)
+                radioAudio = new Audio();
+                radioAudio.src = streamUrl;
+                radioAudio.volume = 0.6;
+                radioAudio.play().catch(() => {});
+
+                // Reset VAD state
+                inSpeech = false; silenceCount = 0; speechBuf = []; preRoll = [];
+                smoothedRms = 0; noiseFloor = MANUAL_FLOOR;
+                isListening = true;
+                isRadioPlaying = true;
+
+                CHUNK_MS = CHUNK_SIZE / SAMPLE_RATE * 1000; // 256ms (16kHz chunks from fetch decode)
+                addLog(`🔊 RadioCtx: ${radioCtx.sampleRate}Hz, CHUNK_MS=${CHUNK_MS.toFixed(1)}ms (fetch decode)`);
+
+                setStatus('ラジオ受信中… (連続録音)', 'listening');
+                radioTestBtn.textContent = '⏹ 停止';
+                radioTestBtn.style.background = 'var(--accent)';
+                radioTestBtn.style.color = '#fff';
+                radioStatus.textContent = '連続録音モード — 15秒ごとにWhisperへ送信';
+                recordBtn.disabled = true;
+
+                await captureRadioStream(streamUrl, radioCtx);
+
+            } catch (err) {
+                addLog(`❌ ラジオ接続失敗: ${err.message}`);
+                radioStatus.textContent = `エラー: ${err.message}`;
+                console.error(err);
+            } finally {
+                if (isRadioPlaying) stopRadioTest();
+                radioTestBtn.disabled = false;
+            }
+        });
+
+        // ── Test mode (?test in URL) ──────────────────────────────────────────
+        if (new URLSearchParams(location.search).has('test')) {
+            // Skip real model load; simulate the UI flow instead
+            setStatus('Test mode — ready', 'listening');
+            recordBtn.disabled = false;
+            modelSelect.disabled = true;
+
+            // Inject a "▶ Run test" button next to record
+            const testBtn = document.createElement('button');
+            testBtn.textContent = '▶ Run test';
+            testBtn.style.cssText = 'flex:1;padding:14px;font-size:1rem;border:none;border-radius:var(--radius);cursor:pointer;font-weight:600;background:#8b5cf6;color:#fff;';
+            document.querySelector('.controls').appendChild(testBtn);
+
+            testBtn.addEventListener('click', async () => {
+                testBtn.disabled = true;
+
+                startRecTimer();
+
+                await new Promise(r => setTimeout(r, 3500));  // 3.5s "recording"
+
+                stopRecTimer();
+                const fakeAudioSec = 3.5;
+                startProcTimer(fakeAudioSec);
+
+                await new Promise(r => setTimeout(r, 2500));  // 2.5s "processing"
+
+                stopProcTimer();
+                results.push('（テスト）これはテスト用の文字起こし結果です。');
+                renderDisplay();
+                setStatus('Test mode — ready', 'listening');
+                testBtn.disabled = false;
+            });
         } else {
-          setStatus(`Error: ${event.error || 'recognition failed'}`, 'error');
+            loadModel();
         }
-      };
-
-      recognition.onend = () => {
-        log('recognition', 'onend');
-        if (isRecording && !stopRequested) {
-          log('recognition', 'auto restart');
-          recognition.start();
-          return;
-        }
-
-        isRecording = false;
-        stopRequested = false;
-        recordBtn.textContent = '🎙️ Start';
-        recordBtn.classList.remove('active');
-        if (!statusDot.classList.contains('error')) {
-          setStatus('Stopped');
-        }
-      };
-    }
-
-    recordBtn.addEventListener('click', async () => {
-      try {
-        if (!isRecording) {
-          if (!recognition) {
-            setupRecognition();
-          }
-          if (!recognition) {
-            return;
-          }
-
-          stopRequested = false;
-          recognition.start();
-          isRecording = true;
-          recordBtn.textContent = '⏹ Stop';
-          recordBtn.classList.add('active');
-          return;
-        }
-
-        stopRequested = true;
-        recognition.stop();
-      } catch (error) {
-        console.error(error);
-        log('exception:', error.message || String(error));
-        setStatus(`Error: ${error.message || 'failed to start'}`, 'error');
-      }
-    });
-
-    clearBtn.addEventListener('click', async () => {
-      const text = `${committedText}${liveText}`.trim();
-      if (text) {
-        await storageApi?.archiveText(text, 'clear');
-      }
-      committedText = '';
-      liveText = '';
-      renderText();
-      await storageApi?.saveLatestText('');
-    });
-
-    sendBtn.addEventListener('click', async () => {
-      const text = `${committedText}${liveText}`.trim();
-      if (!text) return;
-      await storageApi?.archiveText(text, 'send');
-      committedText = '';
-      liveText = '';
-      renderText();
-      await storageApi?.saveLatestText('');
-    });
-
-    async function restoreLatest() {
-      try {
-        const latest = await storageApi?.getLatestText();
-        if (latest?.body) {
-          committedText = latest.body;
-          renderText();
-        }
-      } catch (error) {
-        console.warn('failed to restore latest text', error);
-        log('restore warning:', error.message || String(error));
-      }
-    }
-
-    setupRecognition();
-    restoreLatest();
-  </script>
+    </script>
 </body>
 </html>
