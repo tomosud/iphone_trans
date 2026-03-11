@@ -11,6 +11,6 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@huggingface/transformers": "^3.0.2"
+    "@huggingface/transformers": "^3.7.2"
   }
 }

@@ -260,7 +260,9 @@
 
     <script src="storage.js"></script>
     <script type="module">
-        import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.2';
+        // Moonshine models require a newer transformers.js release that includes
+        // MoonshineFeatureExtractor registration.
+        import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2';
 
         env.allowLocalModels = false;
         env.useBrowserCache  = true;
