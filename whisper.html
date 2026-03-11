@@ -364,6 +364,26 @@
         let   vadScaleFixed = 0;   // 0 = auto-fit
         let   vadScale      = 0.10;
         const vadLevels     = new Array(VAD_HIST_LEN).fill(0);
+        let   _vadDirty     = false;  // flag: new data since last paint
+        let   _vadRafId     = 0;      // requestAnimationFrame handle
+        let   _vadMaxLevel  = 0.005;  // tracked incrementally (avoid Math.max spread)
+
+        // Schedule a canvas repaint on the next animation frame (non-blocking).
+        // Multiple calls between frames coalesce into one paint.
+        function scheduleVadDraw() {
+            _vadDirty = true;
+            if (!_vadRafId) {
+                _vadRafId = requestAnimationFrame(_drawVadFrame);
+            }
+        }
+
+        function _drawVadFrame() {
+            _vadRafId = 0;
+            if (_vadDirty) {
+                _vadDirty = false;
+                drawVadCanvas();
+            }
+        }
 
         function drawVadCanvas() {
             if (!vadCanvasCtx || !vadCanvas) return;
@@ -375,10 +395,9 @@
                 vadCanvas.height = Math.round(cssH * dpr);
             }
             const w = vadCanvas.width, h = vadCanvas.height;
-            // Auto-fit: scale to max of recent levels (with headroom) when not fixed
+            // Auto-fit: use tracked max (avoid spreading 160-element array every frame)
             if (vadScaleFixed === 0) {
-                const maxLv = Math.max(...vadLevels, 0.005);
-                vadScale = maxLv * 1.25;
+                vadScale = Math.max(_vadMaxLevel, 0.005) * 1.25;
             } else {
                 vadScale = vadScaleFixed;
             }
@@ -1011,17 +1030,22 @@
             if (warmupCount < WARMUP_CHUNKS) {
                 warmupCount++;
                 setStatus('🎙️ キャリブレーション中…', 'listening');
-                // VAD canvas
+                // VAD canvas (non-blocking via rAF)
                 vadLevels.push(level);
                 if (vadLevels.length > VAD_HIST_LEN) vadLevels.shift();
-                drawVadCanvas();
+                // Track max incrementally: new value may be new max; if we shifted, recalc lazily
+                if (level >= _vadMaxLevel) { _vadMaxLevel = level; }
+                else if (vadLevels.length >= VAD_HIST_LEN) { _vadMaxLevel = 0; for (let _i = 0; _i < vadLevels.length; _i++) { if (vadLevels[_i] > _vadMaxLevel) _vadMaxLevel = vadLevels[_i]; } }
+                scheduleVadDraw();
                 return;
             }
 
-            // VAD canvas
+            // VAD canvas (non-blocking via rAF)
             vadLevels.push(level);
             if (vadLevels.length > VAD_HIST_LEN) vadLevels.shift();
-            drawVadCanvas();
+            if (level >= _vadMaxLevel) { _vadMaxLevel = level; }
+            else if (vadLevels.length >= VAD_HIST_LEN) { _vadMaxLevel = 0; for (let _i = 0; _i < vadLevels.length; _i++) { if (vadLevels[_i] > _vadMaxLevel) _vadMaxLevel = vadLevels[_i]; } }
+            scheduleVadDraw();
 
             // Live VAD debug — shows level as % of onset threshold so it's clear
             // why speech is / is not being detected.
