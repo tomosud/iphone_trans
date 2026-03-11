@@ -671,6 +671,7 @@
         let monitorSinkNode = null;  // muted node to keep processing graph alive
         let isListening     = false;
         let isProcessing    = false;
+        let _healthTimer    = null;  // periodic AudioContext health check
         // Track whether the AudioWorklet module has been loaded into the current
         // AudioContext. Must be reset whenever a new AudioContext is created because
         // the worklet global scope is per-context; calling addModule() with the same
@@ -955,12 +956,23 @@
                 stopProcTimer();
                 renderDisplay();
 
+                // Whisper blocks the main thread during inference, which can cause
+                // iOS to suspend the AudioContext.  Resume it immediately.
+                if (audioCtx && audioCtx.state === 'suspended' && isListening) {
+                    addLog('⚠️ AudioContext suspended → resuming');
+                    audioCtx.resume().catch(() => {});
+                }
+                // Kick the rAF loop back to life (it stops while main thread is blocked)
+                scheduleVadDraw();
+
                 // Drain queue
                 if (transcribeQueue.length > 0) {
                     const next = transcribeQueue.shift();
                     const qSec = next.reduce((a, c) => a + c.length, 0) / SAMPLE_RATE;
                     transcribeQueueSec = Math.max(0, transcribeQueueSec - qSec);
                     addLog(`▶️ キュードレイン: 音声 ${qSec.toFixed(1)}s を処理開始 (残り ${transcribeQueue.length}件 / ${transcribeQueueSec.toFixed(1)}s)`);
+                    // Yield to browser before next inference so UI can repaint & audio can flow
+                    await new Promise(r => setTimeout(r, 100));
                     _runTranscribe(next);
                 } else {
                     isProcessing = false;
@@ -1279,6 +1291,19 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                 warmupCount = 0;
                 isListening = true;
 
+                // Periodic health check: detect and recover from iOS AudioContext suspension.
+                // iOS suspends audio when Whisper blocks the main thread or the tab backgrounds.
+                clearInterval(_healthTimer);
+                _healthTimer = setInterval(() => {
+                    if (!isListening || !audioCtx) return;
+                    if (audioCtx.state === 'suspended') {
+                        addLog('⚠️ AudioContext suspended (iOS) → auto-resume');
+                        audioCtx.resume().catch(() => {});
+                    }
+                    // Keep rAF alive (it dies when main thread is blocked by Whisper)
+                    scheduleVadDraw();
+                }, 2000);
+
                 setStatus('🎙️ キャリブレーション中…', 'listening');
                 recordBtn.textContent = '⏹️ Stop listening';
                 recordBtn.classList.add('active');
@@ -1310,6 +1335,7 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
             flushBuffer();
             isListening = false;
             stopRecTimer();
+            clearInterval(_healthTimer); _healthTimer = null;
 
             if (workletNode) { workletNode.disconnect(); workletNode = null; }
             if (scriptNode)  { scriptNode.disconnect(); scriptNode = null; }
