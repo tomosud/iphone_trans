@@ -4,7 +4,7 @@
  * Prints timing + results so we can improve whisper.html accordingly.
  */
 
-import { pipeline, env } from '@huggingface/transformers';
+import { pipeline, env } from '@xenova/transformers';
 
 env.allowLocalModels = false;
 env.useBrowserCache  = false;   // use node cache dir instead
@@ -70,11 +70,11 @@ const CASES = [
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-console.log('Loading moonshine-tiny (multilingual)…');
+console.log('Loading whisper-tiny (multilingual)…');
 const t0 = Date.now();
 const transcriber = await pipeline(
     'automatic-speech-recognition',
-    'onnx-community/moonshine-tiny-ONNX',
+    'Xenova/whisper-tiny',
     { progress_callback: (p) => { if (p.status === 'progress') process.stdout.write('.'); } }
 );
 console.log(`\nModel ready in ${((Date.now() - t0)/1000).toFixed(1)}s\n`);
