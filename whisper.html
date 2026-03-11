@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>Moonshine ASR</title>
+  <title>Light Speech Input</title>
   <link rel="stylesheet" href="styles.css">
   <style>
     .asr-shell {
@@ -69,7 +69,7 @@
     <section class="input-panel">
       <div class="status-row">
         <span id="statusDot" class="status-dot"></span>
-        <span id="statusText">Moonshine ready</span>
+        <span id="statusText">Speech API ready</span>
       </div>
       <div class="input-row" style="grid-template-columns:auto auto auto; justify-content:start;">
         <button id="recordBtn" class="record-button" type="button">🎙️ Start</button>
@@ -77,8 +77,12 @@
         <button id="clearBtn" class="clear-button" type="button">Clear</button>
       </div>
       <div class="meta-row" style="margin-top:10px;">
-        <span class="meta-label">model</span>
-        <span class="model-path">model/tiny</span>
+        <span class="meta-label">engine</span>
+        <span class="model-path">Web Speech API (lightweight)</span>
+      </div>
+      <div class="meta-row" style="margin-top:10px; align-items:flex-start;">
+        <span class="meta-label">log</span>
+        <pre id="logBox" class="model-path" style="white-space:pre-wrap; line-height:1.35; min-height:80px; max-height:180px; overflow:auto; margin:0; width:min(100%, 560px);"></pre>
       </div>
     </section>
 
@@ -97,9 +101,7 @@
   </main>
 
   <script src="storage.js"></script>
-  <script type="module">
-    import * as Moonshine from 'https://cdn.jsdelivr.net/npm/@moonshine-ai/moonshine-js@latest/dist/moonshine.min.js';
-
+  <script>
     const storageApi = window.TransStorage;
     const finalText = document.getElementById('finalText');
     const recordBtn = document.getElementById('recordBtn');
@@ -107,11 +109,21 @@
     const sendBtn = document.getElementById('sendBtn');
     const statusText = document.getElementById('statusText');
     const statusDot = document.getElementById('statusDot');
+    const logBox = document.getElementById('logBox');
 
-    const MODEL_PATH = 'model/tiny';
     let liveText = '';
     let committedText = '';
     let isRecording = false;
+    let stopRequested = false;
+    let recognition = null;
+
+    function log(message, detail) {
+      const now = new Date();
+      const ts = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+      const line = detail ? `[${ts}] ${message} ${detail}` : `[${ts}] ${message}`;
+      logBox.textContent = `${line}\n${logBox.textContent}`.slice(0, 2500);
+      console.log('[speech]', message, detail || '');
+    }
 
     function renderText() {
       finalText.textContent = `${committedText}${liveText}`.trim();
@@ -121,43 +133,97 @@
       statusText.textContent = message;
       statusDot.classList.toggle('active', state === 'active');
       statusDot.classList.toggle('error', state === 'error');
+      log('status:', message);
     }
 
-    const transcriber = new Moonshine.MicrophoneTranscriber(
-      MODEL_PATH,
-      {
-        onTranscriptionCommitted(text) {
-          committedText = `${committedText} ${text}`.trim();
-          liveText = '';
-          renderText();
-          storageApi?.saveLatestText(committedText);
-        },
-        onTranscriptionUpdated(text) {
-          liveText = text;
-          renderText();
-        },
-      },
-      false,
-    );
+    function setupRecognition() {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        setStatus('SpeechRecognition is not supported on this browser', 'error');
+        recordBtn.disabled = true;
+        log('error:', 'SpeechRecognition unavailable');
+        return;
+      }
+
+      recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+
+      recognition.onstart = () => {
+        setStatus('Listening…', 'active');
+        log('recognition', 'onstart');
+      };
+
+      recognition.onresult = (event) => {
+        let interim = '';
+        for (let i = event.resultIndex; i < event.results.length; i += 1) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            committedText = `${committedText} ${transcript}`.trim();
+            log('final:', transcript.trim());
+          } else {
+            interim += transcript;
+          }
+        }
+
+        liveText = interim.trim();
+        renderText();
+        if (committedText) {
+          void storageApi?.saveLatestText(committedText);
+        }
+      };
+
+      recognition.onerror = (event) => {
+        log('error:', `${event.error || 'unknown'} (${event.message || 'no message'})`);
+        if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+          setStatus('Mic permission denied', 'error');
+        } else {
+          setStatus(`Error: ${event.error || 'recognition failed'}`, 'error');
+        }
+      };
+
+      recognition.onend = () => {
+        log('recognition', 'onend');
+        if (isRecording && !stopRequested) {
+          log('recognition', 'auto restart');
+          recognition.start();
+          return;
+        }
+
+        isRecording = false;
+        stopRequested = false;
+        recordBtn.textContent = '🎙️ Start';
+        recordBtn.classList.remove('active');
+        if (!statusDot.classList.contains('error')) {
+          setStatus('Stopped');
+        }
+      };
+    }
 
     recordBtn.addEventListener('click', async () => {
       try {
         if (!isRecording) {
-          await transcriber.start();
+          if (!recognition) {
+            setupRecognition();
+          }
+          if (!recognition) {
+            return;
+          }
+
+          stopRequested = false;
+          recognition.start();
           isRecording = true;
           recordBtn.textContent = '⏹ Stop';
           recordBtn.classList.add('active');
-          setStatus('Listening…', 'active');
           return;
         }
 
-        await transcriber.stop();
-        isRecording = false;
-        recordBtn.textContent = '🎙️ Start';
-        recordBtn.classList.remove('active');
-        setStatus('Stopped');
+        stopRequested = true;
+        recognition.stop();
       } catch (error) {
         console.error(error);
+        log('exception:', error.message || String(error));
         setStatus(`Error: ${error.message || 'failed to start'}`, 'error');
       }
     });
@@ -192,9 +258,11 @@
         }
       } catch (error) {
         console.warn('failed to restore latest text', error);
+        log('restore warning:', error.message || String(error));
       }
     }
 
+    setupRecognition();
     restoreLatest();
   </script>
 </body>
