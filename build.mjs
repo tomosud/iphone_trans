@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 const rootDir = process.cwd();
 const distDir = join(rootDir, "dist");
-const htmlFiles = ["index.html", "saved.html", "whisper.html", "moonshine.html"];
+const htmlFiles = ["index.html", "saved.html"];
 const assetFiles = ["styles.css", "storage.js", "script.js", "saved.js"];
 const buildVersion = new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 12);
 
