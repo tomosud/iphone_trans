@@ -295,11 +295,12 @@
         let   CHUNK_MS          = CHUNK_SIZE / SAMPLE_RATE * 1000; // updated after AudioContext starts
         const PRE_ROLL_CHUNKS   = 8;             // ~2s pre-roll
         const MIN_SPEECH_CHUNKS = 2;             // ignore clips shorter than ~2 chunks
-        // Updated dynamically in startListening() to match actual AudioContext rate.
-        // Target: ~6 s of real audio. On iOS 44100 Hz → ~65 chunks; on 16 kHz → ~23 chunks.
-        let MAX_SPEECH_CHUNKS = Math.round(6 * SAMPLE_RATE / CHUNK_SIZE);
-        const ONSET_CHUNKS_NEEDED = 1;           // single chunk sufficient — avoids missing soft onset
-        const KEEP_TRAILING_CHUNKS = 6;          // keep ~560 ms tail — prevent cutting sentence endings
+        // Time-based thresholds — recalculated after AudioContext starts (rate varies by device).
+        const MAX_SPEECH_S      = 20;    // max segment length in seconds
+        const SILENCE_MS_TARGET = 1500;  // silence duration to end a segment (ms)
+        const KEEP_TRAILING_MS  = 600;   // trailing audio to keep before trimming (ms)
+        let MAX_SPEECH_CHUNKS = Math.round(MAX_SPEECH_S * SAMPLE_RATE / CHUNK_SIZE);
+        const ONSET_CHUNKS_NEEDED = 1;
 
         // Adaptive VAD: noise floor tracks background RMS; onset/offset use multipliers
         const NOISE_ALPHA   = 0.006;   // noise floor adaptation speed (faster post-speech readaptation)
@@ -316,11 +317,9 @@
         let warmupCount = 0;
 
         let MANUAL_FLOOR      = 0.005; // hard minimum floor – kept low so adaptive logic dominates
-        // iOS Safari runs AudioContext at 44100 Hz (ignores the 16000 Hz hint), so
-        // CHUNK_MS ≈ 4096/44100*1000 ≈ 93 ms per chunk, not 256 ms.
-        // 10 chunks → ~930 ms on iOS 44100 Hz, ~2.6 s on 16 kHz.
-        // Shorter than the previous 14 so segments are sent more quickly after speech ends.
-        let SILENCE_CHUNKS_NEEDED = 10;
+        // Recalculated after AudioContext starts based on SILENCE_MS_TARGET / CHUNK_MS.
+        // e.g. iOS 44100 Hz: 1500 / 92.9ms ≈ 16 chunks; 16 kHz: 1500 / 256ms ≈ 6 chunks.
+        let SILENCE_CHUNKS_NEEDED = Math.round(SILENCE_MS_TARGET / CHUNK_MS);
 
         // ── Adaptive VAD multiplier calculation ──────────────────────────────
         // Returns onset/offset multipliers that scale with the background noise level.
@@ -664,8 +663,9 @@
         let speechBuf    = [];   // Float32Arrays of current speech
         let preRoll      = [];   // ring-buffer before speech onset
         let smoothedRms  = 0;
-        let noiseFloor   = 0.010; // adaptive background noise estimate
-        let autoGain     = 1.0;
+        let noiseFloor      = 0.010; // adaptive background noise estimate
+        let autoGain        = 1.0;
+        let nativeAudioRate = SAMPLE_RATE; // actual mic rate (44100 on iOS); used in _runTranscribe
 
         // Timer state
         let speechStartTime  = 0;
@@ -852,7 +852,7 @@
         // If already processing, queue the segment and process all segments in order.
         function transcribeSegment(chunks) {
             if (!transcriber || chunks.length < MIN_SPEECH_CHUNKS) return;
-            const sec = chunks.reduce((a, c) => a + c.length, 0) / SAMPLE_RATE;
+            const sec = chunks.reduce((a, c) => a + c.length, 0) / nativeAudioRate;
             if (isProcessing) {
                 transcribeQueue.push(chunks);
                 transcribeQueueSec += sec;
@@ -865,25 +865,38 @@
 
         async function _runTranscribe(chunks) {
             const totalLen = chunks.reduce((a, c) => a + c.length, 0);
-            const audio = new Float32Array(totalLen);
+            const nativeAudio = new Float32Array(totalLen);
             let off = 0;
-            for (const c of chunks) { audio.set(c, off); off += c.length; }
+            for (const c of chunks) { nativeAudio.set(c, off); off += c.length; }
 
-            const audioSec = totalLen / SAMPLE_RATE;
+            const audioSec = totalLen / nativeAudioRate;
 
-            // RMS-normalize audio to a fixed target level so quiet lecture
-            // recordings are amplified to the same level as close-mic speech.
+            // Resample to 16kHz using OfflineAudioContext (browser's high-quality resampler).
+            // Falls through when already at 16kHz (radio, VAD test, desktop mic).
+            let audio;
+            if (nativeAudioRate !== SAMPLE_RATE) {
+                const outLen = Math.ceil(totalLen * SAMPLE_RATE / nativeAudioRate);
+                const offCtx = new OfflineAudioContext(1, outLen, SAMPLE_RATE);
+                const buf = offCtx.createBuffer(1, totalLen, nativeAudioRate);
+                buf.copyToChannel(nativeAudio, 0);
+                const src = offCtx.createBufferSource();
+                src.buffer = buf;
+                src.connect(offCtx.destination);
+                src.start();
+                const rendered = await offCtx.startRendering();
+                audio = rendered.getChannelData(0).slice(); // copy out of AudioBuffer
+            } else {
+                audio = nativeAudio;
+            }
+
+            // RMS-normalize so Whisper receives consistent levels regardless of mic distance.
             let rmsIn = 0;
             for (let i = 0; i < audio.length; i++) rmsIn += audio[i] * audio[i];
             rmsIn = Math.sqrt(rmsIn / audio.length);
             let normalizedAudio = audio;
             if (rmsIn > 0.001) {
-                // RMS-normalize audio to a fixed target level so quiet recordings
-                // are amplified to the same level as close-mic speech.
-                // targetRms=0.10 and 3× cap are conservative to avoid feeding
-                // Whisper clipped/over-amplified audio that produces empty results.
                 const targetRms = 0.10;
-                const scale = Math.min(targetRms / rmsIn, 3); // cap 3× gain (over-amplification prevention)
+                const scale = Math.min(targetRms / rmsIn, 3);
                 normalizedAudio = new Float32Array(audio.length);
                 for (let i = 0; i < audio.length; i++) {
                     normalizedAudio[i] = Math.max(-1, Math.min(1, audio[i] * scale));
@@ -953,15 +966,13 @@
 
         // ── VAD: called with one chunk of audio samples ───────────────────────
         function onAudioChunk(rawSamples) {
-            // Resample to 16kHz only for microphone input (audioCtx may run at 44100Hz on iOS).
-            // Radio fetch chunks are pre-downsampled to 16kHz in captureRadioStream, skip here.
-            const ctxRate = (audioCtx && audioCtx.sampleRate) || SAMPLE_RATE;
-            let samples = ctxRate !== SAMPLE_RATE
-                ? downsample(rawSamples, ctxRate)
-                : rawSamples;
+            // Store chunks at native device rate (e.g. 44100Hz on iOS).
+            // High-quality resampling to 16kHz happens in _runTranscribe via OfflineAudioContext.
+            // Radio chunks are already at 16kHz (pre-downsampled in captureRadioStream).
             // Auto gain: lift quiet speech automatically, keep stable with smoothing.
             // Only update gain when NOT speaking to prevent gain drift during speech,
             // which would destabilise the audio fed to Whisper.
+            let samples = rawSamples;
             const rawLevel = rms(samples);
             // Update AGC when signal is quiet (rawLevel < noiseFloor*3) even while
             // inSpeech=true (continuous mode). This prevents gain freezing permanently
@@ -1105,18 +1116,19 @@
             let seg = speechBuf.slice();
             speechBuf = [];
 
-            const rawSec = seg.reduce((a, c) => a + c.length, 0) / SAMPLE_RATE;
+            const rawSec = seg.reduce((a, c) => a + c.length, 0) / nativeAudioRate;
 
             // Trim trailing silence so Whisper receives clean audio
             // (skip in radio continuous mode — fixed 30s windows need no trim)
             if (!isRadioPlaying) {
+                const keepChunks = Math.max(MIN_SPEECH_CHUNKS, Math.round(KEEP_TRAILING_MS / CHUNK_MS));
                 const { offsetMult: _trimOffsetMult } = computeAdaptiveMults(noiseFloor);
                 const trimThresh = Math.max(MANUAL_FLOOR * 0.6, noiseFloor * _trimOffsetMult);
-                while (seg.length > Math.max(MIN_SPEECH_CHUNKS, KEEP_TRAILING_CHUNKS) && rms(seg[seg.length - 1]) < trimThresh) {
+                while (seg.length > keepChunks && rms(seg[seg.length - 1]) < trimThresh) {
                     seg.pop();
                 }
             }
-            const trimSec = seg.reduce((a, c) => a + c.length, 0) / SAMPLE_RATE;
+            const trimSec = seg.reduce((a, c) => a + c.length, 0) / nativeAudioRate;
 
             if (seg.length >= MIN_SPEECH_CHUNKS) {
                 addLog(`🔴 セグメント送信: 生${rawSec.toFixed(2)}s → トリム後${trimSec.toFixed(2)}s → Whisper`);
@@ -1165,12 +1177,12 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
 
                 // Log and adjust for actual sample rate (iOS may ignore sampleRate:16000 hint)
                 const actualRate = audioCtx.sampleRate;
+                nativeAudioRate = actualRate;
                 CHUNK_MS = CHUNK_SIZE / actualRate * 1000;
-                // Recalculate MAX_SPEECH_CHUNKS based on the real context rate so that
-                // the auto-flush fires at ~6 s of real audio regardless of device rate.
-                // (e.g. iOS 44100 Hz → 65 chunks×93ms≈6s; 16kHz → 23 chunks×256ms≈6s)
-                MAX_SPEECH_CHUNKS = Math.round(6 * actualRate / CHUNK_SIZE);
-                addLog(`🔊 AudioContext: ${actualRate}Hz (target 16000Hz)${actualRate !== SAMPLE_RATE ? ' ⚠️ リサンプリングします' : ' ✅'}  MAX_SPEECH=${MAX_SPEECH_CHUNKS}chunks≈6s`);
+                SILENCE_CHUNKS_NEEDED = Math.max(4, Math.round(SILENCE_MS_TARGET / CHUNK_MS));
+                MAX_SPEECH_CHUNKS     = Math.round(MAX_SPEECH_S * actualRate / CHUNK_SIZE);
+                const resampleNote = actualRate !== SAMPLE_RATE ? ' ⚠️ OfflineAudioContextでリサンプリング' : ' ✅';
+                addLog(`🔊 AudioContext: ${actualRate}Hz${resampleNote}  silence=${SILENCE_CHUNKS_NEEDED}chunks≈${SILENCE_MS_TARGET}ms  max=${MAX_SPEECH_CHUNKS}chunks≈${MAX_SPEECH_S}s`);
 
                 // Disable browser DSP for lecture recording: echo cancellation
                 // treats far-field speaker audio as "echo" and cancels it.
@@ -1585,7 +1597,9 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                 isListening = true;
                 isRadioPlaying = true;
 
-                CHUNK_MS = CHUNK_SIZE / SAMPLE_RATE * 1000; // 256ms (16kHz chunks from fetch decode)
+                // Radio chunks are pre-downsampled to 16kHz in captureRadioStream
+                nativeAudioRate = SAMPLE_RATE;
+                CHUNK_MS = CHUNK_SIZE / SAMPLE_RATE * 1000; // 256ms
                 addLog(`🔊 RadioCtx: ${radioCtx.sampleRate}Hz, CHUNK_MS=${CHUNK_MS.toFixed(1)}ms (fetch decode)`);
 
                 setStatus('ラジオ受信中… (連続録音)', 'listening');
