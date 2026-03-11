@@ -133,6 +133,7 @@
                 <select id="modelSelect">
                     <option value="Xenova/whisper-tiny.en">whisper-tiny.en (EN only · fastest · ~75MB)</option>
                     <option value="Xenova/whisper-base.en">whisper-base.en (EN only · better · ~142MB)</option>
+                    <option value="Xenova/whisper-small.en">whisper-small.en (EN only · best · ~244MB)</option>
                     <option value="Xenova/whisper-tiny">whisper-tiny (multilingual · ~75MB)</option>
                     <option value="Xenova/whisper-base">whisper-base (multilingual · ~142MB)</option>
                 </select>
@@ -308,7 +309,7 @@
         // Auto gain control for quiet speech (after manual gain, before VAD/Whisper)
         const AGC_TARGET_RMS = 0.020;  // target RMS after gain (was 0.030 — too high, raised gain needed)
         const AGC_MIN_GAIN   = 0.2;    // allow attenuation for loud mics (下げOK)
-        const AGC_MAX_GAIN   = 8.0;    // allow up to 8× boost for distant/quiet mics (was 2.0)
+        const AGC_MAX_GAIN   = 5.0;    // allow up to 5× boost for distant/quiet mics (was 8.0 — too aggressive, distorts)
         const AGC_ALPHA      = 0.05;   // slightly faster gain tracking
 
         // Warmup: suppress speech detection for the first N chunks after startListening()
@@ -906,7 +907,9 @@
                 if (scale < 0.9 || scale > 1.1) { // skip if already near target
                     normalizedAudio = new Float32Array(audio.length);
                     for (let i = 0; i < audio.length; i++) {
-                        normalizedAudio[i] = Math.max(-1, Math.min(1, audio[i] * scale));
+                        // Soft limiting with tanh to preserve waveform shape
+                        const x = audio[i] * scale;
+                        normalizedAudio[i] = (x >= -1 && x <= 1) ? x : Math.tanh(x);
                     }
                 }
             }
@@ -1006,7 +1009,10 @@
             if (autoGain !== 1.0) {
                 const boosted = new Float32Array(samples.length);
                 for (let i = 0; i < samples.length; i++) {
-                    boosted[i] = Math.max(-1, Math.min(1, samples[i] * autoGain));
+                    // Soft limiting with tanh — avoids harsh clipping distortion
+                    // that degrades Whisper accuracy on transients and plosives.
+                    const x = samples[i] * autoGain;
+                    boosted[i] = (x >= -1 && x <= 1) ? x : Math.tanh(x);
                 }
                 samples = boosted;
             }
