@@ -296,8 +296,8 @@
         const PRE_ROLL_CHUNKS   = 8;             // ~2s pre-roll
         const MIN_SPEECH_CHUNKS = 2;             // ignore clips shorter than ~2 chunks
         // Updated dynamically in startListening() to match actual AudioContext rate.
-        // Target: ~6 s of real audio. On iOS 44100 Hz → ~65 chunks; on 16 kHz → ~23 chunks.
-        let MAX_SPEECH_CHUNKS = Math.round(6 * SAMPLE_RATE / CHUNK_SIZE);
+        // Target: ~15s of real audio so natural speech isn't cut mid-sentence.
+        let MAX_SPEECH_CHUNKS = Math.round(15 * SAMPLE_RATE / CHUNK_SIZE);
         const ONSET_CHUNKS_NEEDED = 1;           // single chunk sufficient — avoids missing soft onset
         const KEEP_TRAILING_CHUNKS = 6;          // keep ~560 ms tail — prevent cutting sentence endings
 
@@ -320,7 +320,9 @@
         // CHUNK_MS ≈ 4096/44100*1000 ≈ 93 ms per chunk, not 256 ms.
         // 10 chunks → ~930 ms on iOS 44100 Hz, ~2.6 s on 16 kHz.
         // Shorter than the previous 14 so segments are sent more quickly after speech ends.
-        let SILENCE_CHUNKS_NEEDED = 10;
+        // Dynamically recalculated in startListening() based on actual sample rate.
+        // Target: ~1s of silence regardless of device rate.
+        let SILENCE_CHUNKS_NEEDED = Math.round(1.0 * SAMPLE_RATE / CHUNK_SIZE);
 
         // ── Adaptive VAD multiplier calculation ──────────────────────────────
         // Returns onset/offset multipliers that scale with the background noise level.
@@ -871,19 +873,17 @@
 
             const audioSec = totalLen / SAMPLE_RATE;
 
-            // RMS-normalize audio to a fixed target level so quiet lecture
-            // recordings are amplified to the same level as close-mic speech.
+            // RMS-normalize: only apply if AGC wasn't active (autoGain ~1.0).
+            // When AGC is active it already levels the audio, so double-amplifying
+            // causes clipping and produces empty Whisper results.
             let rmsIn = 0;
             for (let i = 0; i < audio.length; i++) rmsIn += audio[i] * audio[i];
             rmsIn = Math.sqrt(rmsIn / audio.length);
             let normalizedAudio = audio;
-            if (rmsIn > 0.001) {
-                // RMS-normalize audio to a fixed target level so quiet recordings
-                // are amplified to the same level as close-mic speech.
-                // targetRms=0.10 and 3× cap are conservative to avoid feeding
-                // Whisper clipped/over-amplified audio that produces empty results.
-                const targetRms = 0.10;
-                const scale = Math.min(targetRms / rmsIn, 3); // cap 3× gain (over-amplification prevention)
+            if (rmsIn > 0.001 && rmsIn < 0.05) {
+                // Only normalize if audio is genuinely quiet (AGC didn't catch it)
+                const targetRms = 0.08;
+                const scale = Math.min(targetRms / rmsIn, 2.5);
                 normalizedAudio = new Float32Array(audio.length);
                 for (let i = 0; i < audio.length; i++) {
                     normalizedAudio[i] = Math.max(-1, Math.min(1, audio[i] * scale));
@@ -892,11 +892,9 @@
             storeAudioClip(normalizedAudio, audioSec);
 
             isPending = true;
-            // isProcessing already set to true by caller (transcribeSegment or drain)
             renderDisplay();
             stopRecTimer();
             startProcTimer(audioSec);
-            // .en models are English-only; force lang='en' regardless of selector
             const isEnOnly = modelSelect.value.includes('.en');
             const selectedLang = isEnOnly ? 'en' : (langSelect.value || null);
             const modelName    = modelSelect.value.split('/').pop();
@@ -904,18 +902,20 @@
 
             const t0 = Date.now();
             try {
-                // chunk_length_s: split audio into shorter segments internally.
-                // Helps whisper-base: 30s monolithic decode often gives empty output
-                // for broadcast radio, but per-chunk no_speech detection is more reliable.
-                const res = await transcriber(normalizedAudio, {
+                // Timeout: abort if Whisper hangs for more than 60s
+                const timeoutMs = Math.max(60000, audioSec * 10000);
+                const transcribePromise = transcriber(normalizedAudio, {
                     language: selectedLang,
                     task: 'transcribe',
                     chunk_length_s: 15,
                     stride_length_s: 3,
                 });
+                const timeoutPromise = new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('Whisper timeout')), timeoutMs)
+                );
+                const res = await Promise.race([transcribePromise, timeoutPromise]);
                 const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
                 const text = (res.text || '').trim();
-                isPending = false;
                 if (text) {
                     results.push(text);
                     accumulatedText = results.join('\n');
@@ -924,30 +924,28 @@
                 } else {
                     addLog(`⚠️ Whisper完了: ${elapsed}s → 空 (無音 or ノイズのみ?)`);
                 }
-                renderDisplay();
             } catch (err) {
                 const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
                 console.error(err);
-                isPending = false;
                 results.push('⚠️ ' + err.message);
                 addLog(`❌ Whisperエラー: ${elapsed}s → ${err.message}`);
+            } finally {
+                // CRITICAL: always reset state even on error to prevent deadlock
+                isPending = false;
+                stopProcTimer();
                 renderDisplay();
-            }
 
-            stopProcTimer();
-            isProcessing = false;
-
-            // Drain queue: process all queued segments in FIFO order.
-            // Set isProcessing=true BEFORE the async call to prevent concurrent entries.
-            if (transcribeQueue.length > 0) {
-                isProcessing = true;
-                const next = transcribeQueue.shift();
-                const qSec = next.reduce((a, c) => a + c.length, 0) / SAMPLE_RATE;
-                transcribeQueueSec = Math.max(0, transcribeQueueSec - qSec);
-                addLog(`▶️ キュードレイン: 音声 ${qSec.toFixed(1)}s を処理開始 (残り ${transcribeQueue.length}件 / ${transcribeQueueSec.toFixed(1)}s)`);
-                _runTranscribe(next);
-            } else if (isListening) {
-                setStatus('Listening…', 'listening');
+                // Drain queue
+                if (transcribeQueue.length > 0) {
+                    const next = transcribeQueue.shift();
+                    const qSec = next.reduce((a, c) => a + c.length, 0) / SAMPLE_RATE;
+                    transcribeQueueSec = Math.max(0, transcribeQueueSec - qSec);
+                    addLog(`▶️ キュードレイン: 音声 ${qSec.toFixed(1)}s を処理開始 (残り ${transcribeQueue.length}件 / ${transcribeQueueSec.toFixed(1)}s)`);
+                    _runTranscribe(next);
+                } else {
+                    isProcessing = false;
+                    if (isListening) setStatus('Listening…', 'listening');
+                }
             }
         }
 
@@ -1062,11 +1060,11 @@
             }
 
             // ── Onset detection with pre-roll ─────────────────────────────────
-            // Use offsetThresh (lower than onsetThresh) to catch quiet speech.
-            // preRoll ensures we don't miss the beginning of a syllable.
-            // Silence is skipped here to prevent endless silent-segment loops.
+            // Use onsetThresh (higher) for onset to avoid false triggers from noise.
+            // preRoll captures the beginning of speech even if onset fires slightly late.
+            // offsetThresh (lower) is used only for offset detection below.
             if (!inSpeech) {
-                if (level < offsetThresh) return; // silence — wait for audio
+                if (level < onsetThresh) return; // below onset threshold — wait for speech
                 inSpeech = true;
                 onsetCount = 0;
                 silenceCount = 0;
@@ -1130,19 +1128,33 @@
 
         // ── AudioWorklet: inline processor via blob URL ───────────────────────
         function buildWorkletBlob(chunkSize) {
+            // Use a pre-allocated Float32Array ring buffer instead of Array push/splice
+            // for much better performance (no GC pressure, no array resizing).
             const code = `
 class ChunkProcessor extends AudioWorkletProcessor {
     constructor() {
         super();
-        this._buf = [];
+        this._buf = new Float32Array(${chunkSize} * 4);
+        this._len = 0;
     }
     process(inputs) {
         const ch = inputs[0] && inputs[0][0];
-        if (ch) {
-            for (let i = 0; i < ch.length; i++) this._buf.push(ch[i]);
-            while (this._buf.length >= ${chunkSize}) {
-                this.port.postMessage(new Float32Array(this._buf.splice(0, ${chunkSize})));
-            }
+        if (!ch) return true;
+        // Copy input into ring buffer
+        if (this._len + ch.length > this._buf.length) {
+            // Grow buffer (rare)
+            const nb = new Float32Array(Math.max(this._buf.length * 2, this._len + ch.length));
+            nb.set(this._buf.subarray(0, this._len));
+            this._buf = nb;
+        }
+        this._buf.set(ch, this._len);
+        this._len += ch.length;
+        // Emit full chunks
+        while (this._len >= ${chunkSize}) {
+            this.port.postMessage(this._buf.slice(0, ${chunkSize}));
+            // Shift remaining data to front
+            this._buf.copyWithin(0, ${chunkSize}, this._len);
+            this._len -= ${chunkSize};
         }
         return true;
     }
@@ -1169,8 +1181,9 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                 // Recalculate MAX_SPEECH_CHUNKS based on the real context rate so that
                 // the auto-flush fires at ~6 s of real audio regardless of device rate.
                 // (e.g. iOS 44100 Hz → 65 chunks×93ms≈6s; 16kHz → 23 chunks×256ms≈6s)
-                MAX_SPEECH_CHUNKS = Math.round(6 * actualRate / CHUNK_SIZE);
-                addLog(`🔊 AudioContext: ${actualRate}Hz (target 16000Hz)${actualRate !== SAMPLE_RATE ? ' ⚠️ リサンプリングします' : ' ✅'}  MAX_SPEECH=${MAX_SPEECH_CHUNKS}chunks≈6s`);
+                MAX_SPEECH_CHUNKS = Math.round(15 * actualRate / CHUNK_SIZE);
+                SILENCE_CHUNKS_NEEDED = Math.round(1.0 * actualRate / CHUNK_SIZE);
+                addLog(`🔊 AudioContext: ${actualRate}Hz (target 16000Hz)${actualRate !== SAMPLE_RATE ? ' ⚠️ リサンプリングします' : ' ✅'}  MAX_SPEECH=${MAX_SPEECH_CHUNKS}chunks≈15s  SILENCE=${SILENCE_CHUNKS_NEEDED}chunks≈1s`);
 
                 // Disable browser DSP for lecture recording: echo cancellation
                 // treats far-field speaker audio as "echo" and cancels it.
