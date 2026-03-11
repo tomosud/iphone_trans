@@ -666,6 +666,7 @@
         let transcriber     = null;
         let audioCtx        = null;
         let mediaStream     = null;
+        let mediaSourceNode = null;
         let workletNode     = null;
         let scriptNode      = null;  // fallback
         let monitorSinkNode = null;  // muted node to keep processing graph alive
@@ -1239,7 +1240,7 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                     }
                 });
 
-                const source = audioCtx.createMediaStreamSource(mediaStream);
+                mediaSourceNode = audioCtx.createMediaStreamSource(mediaStream);
 
                 // Try AudioWorklet first, fall back to deprecated ScriptProcessor.
                 // Guard: addModule() must only be called once per AudioContext instance.
@@ -1258,7 +1259,7 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                         workletNode.port.onmessage = (e) => {
                             if (isListening) onAudioChunk(e.data);
                         };
-                        source.connect(workletNode);
+                        mediaSourceNode.connect(workletNode);
                         // Keep processor graph alive without routing microphone audio
                         // back to speakers (feedback/quality degradation prevention).
                         monitorSinkNode = audioCtx.createGain();
@@ -1281,7 +1282,7 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                             onAudioChunk(new Float32Array(e.inputBuffer.getChannelData(0)));
                         }
                     };
-                    source.connect(scriptNode);
+                    mediaSourceNode.connect(scriptNode);
                     monitorSinkNode = audioCtx.createGain();
                     monitorSinkNode.gain.value = 0;
                     scriptNode.connect(monitorSinkNode);
@@ -1344,6 +1345,7 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
 
             if (workletNode) { workletNode.disconnect(); workletNode = null; }
             if (scriptNode)  { scriptNode.disconnect(); scriptNode = null; }
+            if (mediaSourceNode) { mediaSourceNode.disconnect(); mediaSourceNode = null; }
             if (monitorSinkNode) { monitorSinkNode.disconnect(); monitorSinkNode = null; }
             if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
             // Suspend rather than close so the AudioContext can be re-used on the
