@@ -873,20 +873,21 @@
 
             const audioSec = totalLen / SAMPLE_RATE;
 
-            // RMS-normalize: only apply if AGC wasn't active (autoGain ~1.0).
-            // When AGC is active it already levels the audio, so double-amplifying
-            // causes clipping and produces empty Whisper results.
+            // RMS-normalize: always normalize to a consistent level for Whisper.
+            // AGC can over-amplify (RMS 0.2-0.4 is too loud → empty results).
+            // Normalize both UP (quiet audio) and DOWN (over-amplified audio).
             let rmsIn = 0;
             for (let i = 0; i < audio.length; i++) rmsIn += audio[i] * audio[i];
             rmsIn = Math.sqrt(rmsIn / audio.length);
             let normalizedAudio = audio;
-            if (rmsIn > 0.001 && rmsIn < 0.05) {
-                // Only normalize if audio is genuinely quiet (AGC didn't catch it)
+            if (rmsIn > 0.001) {
                 const targetRms = 0.08;
-                const scale = Math.min(targetRms / rmsIn, 2.5);
-                normalizedAudio = new Float32Array(audio.length);
-                for (let i = 0; i < audio.length; i++) {
-                    normalizedAudio[i] = Math.max(-1, Math.min(1, audio[i] * scale));
+                const scale = Math.min(Math.max(targetRms / rmsIn, 0.1), 3.0);
+                if (scale < 0.9 || scale > 1.1) { // skip if already near target
+                    normalizedAudio = new Float32Array(audio.length);
+                    for (let i = 0; i < audio.length; i++) {
+                        normalizedAudio[i] = Math.max(-1, Math.min(1, audio[i] * scale));
+                    }
                 }
             }
             storeAudioClip(normalizedAudio, audioSec);
@@ -1352,6 +1353,7 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
 
                 // Reset VAD for a clean simulation run
                 noiseFloor = MANUAL_FLOOR;
+                autoGain = 1.0;
                 warmupCount = WARMUP_CHUNKS; // bypass warmup — file starts immediately
                 inSpeech = false; silenceCount = 0; speechBuf = []; preRoll = [];
                 isListening = true; // needed for endSpeechSegment restart logic
