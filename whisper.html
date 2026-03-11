@@ -131,6 +131,8 @@
             <div class="model-select">
                 <label for="modelSelect">ASR Engine:</label>
                 <select id="modelSelect">
+                    <option value="onnx-community/whisper-tiny">whisper-tiny (multilingual · stable)</option>
+                    <option value="onnx-community/whisper-base">whisper-base (multilingual · better)</option>
                     <option value="onnx-community/moonshine-tiny-ONNX">moonshine-tiny (multilingual · fastest)</option>
                     <option value="onnx-community/moonshine-base-ONNX">moonshine-base (multilingual · better)</option>
                 </select>
@@ -260,8 +262,7 @@
 
     <script src="storage.js"></script>
     <script type="module">
-        // Moonshine models require a newer transformers.js release that includes
-        // MoonshineFeatureExtractor registration.
+        // Uses transformers.js ASR pipelines (Moonshine + Whisper).
         import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2';
 
         env.allowLocalModels = false;
@@ -855,12 +856,12 @@
 
             addLog('🛟 安定化リカバリ: 収録停止 → tinyへ切替 → モデル再ロード');
             await stopListening();
-            if (modelSelect.value !== 'onnx-community/moonshine-tiny-ONNX') {
-                modelSelect.value = 'onnx-community/moonshine-tiny-ONNX';
+            if (modelSelect.value !== 'onnx-community/whisper-tiny') {
+                modelSelect.value = 'onnx-community/whisper-tiny';
             }
             saveVadSettings();
             await loadModel();
-            setStatus('Recovered after runtime error (tiny stability mode)', 'listening');
+            setStatus('Recovered after runtime error (fallback: whisper-tiny)', 'listening');
         }
 
         if (needsStabilityMode) {
@@ -869,7 +870,7 @@
                 baseOption.textContent += ' ⚠️ iPhoneでは不安定';
             }
             if (!localStorage.getItem('whisper_model')) {
-                modelSelect.value = 'onnx-community/moonshine-tiny-ONNX';
+                modelSelect.value = 'onnx-community/whisper-tiny';
             }
         }
 
