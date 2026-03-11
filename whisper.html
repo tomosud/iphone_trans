@@ -823,6 +823,7 @@
         }
 
         const MAX_DISPLAY = 5;  // show last N results; older ones are still saved
+        let modelLoadNonce = 0;
 
         function renderDisplay() {
             if (results.length === 0 && !isPending) {
@@ -839,33 +840,93 @@
         // ── Model loading ─────────────────────────────────────────────────────
         async function loadModel() {
             const modelName = modelSelect.value;
+            const loadNonce = ++modelLoadNonce;
+            const shortName = modelName.split('/').pop();
+            const t0 = performance.now();
             setStatus('Loading ASR model…', 'loading');
             progressBar.classList.add('visible');
             progressFill.style.width = '0%';
             recordBtn.disabled = true;
             modelSelect.disabled = true;
+            addLog(`🧠 モデルロード開始: ${shortName}`);
+
+            // Model changed while previous instance exists → dispose old pipeline first.
+            if (transcriber?.dispose) {
+                try {
+                    await transcriber.dispose();
+                    addLog('♻️ 既存モデルを破棄して再ロード');
+                } catch (e) {
+                    addLog(`⚠️ 既存モデル破棄でエラー: ${e.message}`);
+                }
+            }
+            transcriber = null;
 
             try {
-                transcriber = await pipeline('automatic-speech-recognition', modelName, {
-                    progress_callback: (p) => {
-                        if (p.status === 'progress') {
-                            const pct = Math.round((p.loaded / p.total) * 100);
-                            progressFill.style.width = `${pct}%`;
-                            setStatus(`Downloading model… ${pct}%`, 'loading');
-                        } else if (p.status === 'done') {
-                            progressFill.style.width = '100%';
-                        }
+                const MAX_ATTEMPTS = 2;
+                let lastErr = null;
+                for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+                    const loggedStarts = new Set();
+                    try {
+                        addLog(`📦 ダウンロード/ロード試行 ${attempt}/${MAX_ATTEMPTS}`);
+                        transcriber = await pipeline('automatic-speech-recognition', modelName, {
+                            progress_callback: (p) => {
+                                if (p?.file && !loggedStarts.has(p.file)) {
+                                    loggedStarts.add(p.file);
+                                    addLog(`⬇️ 取得中: ${p.file}`);
+                                }
+                                if (p.status === 'progress') {
+                                    const pct = p.total > 0 ? Math.round((p.loaded / p.total) * 100) : null;
+                                    if (pct != null) {
+                                        progressFill.style.width = `${pct}%`;
+                                        setStatus(`Downloading model… ${pct}%`, 'loading');
+                                    } else {
+                                        setStatus(`Downloading model… ${Math.round((p.loaded || 0) / 1024)}KB`, 'loading');
+                                    }
+                                } else if (p.status === 'done') {
+                                    progressFill.style.width = '100%';
+                                    if (p?.file) addLog(`✅ 取得完了: ${p.file}`);
+                                }
+                            }
+                        });
+                        break;
+                    } catch (err) {
+                        lastErr = err;
+                        const transient = /fetch|network|timeout|abort|load failed/i.test(err.message || '');
+                        addLog(`❌ モデルロード失敗(試行${attempt}): ${err.message}`);
+                        if (!transient || attempt === MAX_ATTEMPTS) throw err;
+                        addLog('🔁 一時的エラーのためリトライします…');
+                        await new Promise(r => setTimeout(r, 800));
                     }
-                });
+                }
+
+                if (!transcriber && lastErr) throw lastErr;
+
+                if (loadNonce !== modelLoadNonce) {
+                    addLog('ℹ️ 新しいロード要求が来たため、旧ロード結果を破棄');
+                    return;
+                }
+
+                const sec = ((performance.now() - t0) / 1000).toFixed(1);
+                addLog(`✅ モデルロード完了: ${shortName} (${sec}s)`);
                 setStatus('Ready — tap Start to listen', 'listening');
                 recordBtn.disabled = false;
                 document.getElementById('sampleLongBtn').disabled = false;
                 setTimeout(() => progressBar.classList.remove('visible'), 800);
             } catch (err) {
                 console.error(err);
+                addLog(`❌ モデルロード最終失敗: ${err.message}`);
                 setStatus('Model load failed: ' + err.message, '');
+            } finally {
+                if (loadNonce !== modelLoadNonce) {
+                    addLog('ℹ️ 古いロード処理を終了');
+                    return;
+                }
+                modelSelect.disabled = false;
+                if (!transcriber) {
+                    progressBar.classList.remove('visible');
+                    progressFill.style.width = '0%';
+                }
             }
-            modelSelect.disabled = false;
         }
 
         // ── Transcribe a collected speech segment ─────────────────────────────
