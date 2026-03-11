@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Moonshine ASR (Lite)</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    .asr-shell {
+      width: min(760px, 100%);
+      min-height: var(--app-height);
+      margin: 0 auto;
+      display: grid;
+      gap: var(--gap);
+      padding: calc(env(safe-area-inset-top, 0px) + 12px) 12px calc(env(safe-area-inset-bottom, 0px) + 12px);
+    }
+    .status-row, .meta-row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .status-row { margin-bottom: 10px; color: var(--muted); font-size: 0.92rem; }
+    .status-dot { width:10px; height:10px; border-radius:999px; background:#525b67; }
+    .status-dot.active { background:#10b981; }
+    .status-dot.error { background:#ef4444; }
+    .record-button { min-width:120px; height:44px; padding:0 14px; border-radius:16px; border:1px solid rgba(255,255,255,.08); background:#0c8f64; color:#fff; font:inherit; font-weight:600; cursor:pointer; }
+    .record-button.active { background:#dc2626; }
+    .meta-label { color:var(--muted); font-size:.8rem; }
+    .model-path { color:var(--ink); font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:.78rem; border:1px solid rgba(255,255,255,.08); border-radius:10px; padding:4px 8px; background:rgba(20,22,25,.98); }
+  </style>
+</head>
+<body>
+  <main class="asr-shell">
+    <section class="input-panel">
+      <div class="status-row">
+        <span id="statusDot" class="status-dot"></span>
+        <span id="statusText">Moonshine 初期化待ち…</span>
+      </div>
+
+      <div class="input-row" style="grid-template-columns:auto auto auto; justify-content:start;">
+        <button id="recordBtn" class="record-button" type="button">🎙️ Start</button>
+        <button id="sendBtn" class="clear-button" type="button">送信</button>
+        <button id="clearBtn" class="clear-button" type="button">Clear</button>
+      </div>
+
+      <div class="meta-row" style="margin-top:10px; align-items:flex-start;">
+        <span class="meta-label">engine</span>
+        <span id="engineText" class="model-path">Moonshine JS (CDN auto-detect)</span>
+      </div>
+      <div class="meta-row" style="margin-top:10px; align-items:flex-start;">
+        <span class="meta-label">log</span>
+        <pre id="logBox" class="model-path" style="white-space:pre-wrap; line-height:1.35; min-height:88px; max-height:220px; overflow:auto; margin:0; width:min(100%, 560px);"></pre>
+      </div>
+    </section>
+
+    <section class="display-panel">
+      <div class="display-box">
+        <div id="finalText" class="final-text" translate="yes"></div>
+      </div>
+    </section>
+
+    <section class="nav-panel" translate="no">
+      <div style="margin-bottom:8px;"><a class="nav-link-button" href="index.html">← Home</a></div>
+      <a class="nav-link-button" href="saved.html">Open saved texts</a>
+    </section>
+  </main>
+
+  <script src="storage.js"></script>
+  <script type="module">
+    const storageApi = window.TransStorage;
+    const finalText = document.getElementById('finalText');
+    const recordBtn = document.getElementById('recordBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const sendBtn = document.getElementById('sendBtn');
+    const statusText = document.getElementById('statusText');
+    const statusDot = document.getElementById('statusDot');
+    const logBox = document.getElementById('logBox');
+    const engineText = document.getElementById('engineText');
+
+    const TARGET_SAMPLE_RATE = 16000;
+    const MAX_CHUNK_SECONDS = 8;
+
+    let liveText = '';
+    let committedText = '';
+    let isRecording = false;
+    let mediaStream = null;
+    let mediaRecorder = null;
+    let recorderChunkBuffers = [];
+    let recorderStartedAt = 0;
+    let moonshine = null;
+    let moonshineCall = null;
+
+    function log(message, detail) {
+      const now = new Date();
+      const ts = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+      const line = detail ? `[${ts}] ${message} ${detail}` : `[${ts}] ${message}`;
+      logBox.textContent = `${line}\n${logBox.textContent}`.slice(0, 3600);
+      console.log('[moonshine]', message, detail || '');
+    }
+
+    function setStatus(message, state = 'idle') {
+      statusText.textContent = message;
+      statusDot.classList.toggle('active', state === 'active');
+      statusDot.classList.toggle('error', state === 'error');
+      log('status:', message);
+    }
+
+    function renderText() {
+      finalText.textContent = `${committedText} ${liveText}`.trim();
+    }
+
+    function normalizeText(value) {
+      return String(value || '').replace(/\s+/g, ' ').trim();
+    }
+
+    async function blobToFloat32(blob) {
+      const buffer = await blob.arrayBuffer();
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const decoded = await audioContext.decodeAudioData(buffer.slice(0));
+      const mono = decoded.numberOfChannels === 1
+        ? decoded.getChannelData(0)
+        : mixdownToMono(decoded);
+      const resampled = resampleLinear(mono, decoded.sampleRate, TARGET_SAMPLE_RATE);
+      await audioContext.close();
+      return resampled;
+    }
+
+    function mixdownToMono(audioBuffer) {
+      const length = audioBuffer.length;
+      const out = new Float32Array(length);
+      for (let ch = 0; ch < audioBuffer.numberOfChannels; ch += 1) {
+        const data = audioBuffer.getChannelData(ch);
+        for (let i = 0; i < length; i += 1) {
+          out[i] += data[i] / audioBuffer.numberOfChannels;
+        }
+      }
+      return out;
+    }
+
+    function resampleLinear(input, inRate, outRate) {
+      if (inRate === outRate) return input;
+      const ratio = inRate / outRate;
+      const outLength = Math.max(1, Math.round(input.length / ratio));
+      const out = new Float32Array(outLength);
+      for (let i = 0; i < outLength; i += 1) {
+        const x = i * ratio;
+        const i0 = Math.floor(x);
+        const i1 = Math.min(i0 + 1, input.length - 1);
+        const frac = x - i0;
+        out[i] = input[i0] * (1 - frac) + input[i1] * frac;
+      }
+      return out;
+    }
+
+    async function initMoonshine() {
+      setStatus('Moonshine module loading…');
+
+      const candidates = [
+        { name: '@moonshine-ai/moonshine-js', url: 'https://esm.sh/@moonshine-ai/moonshine-js?bundle' },
+        { name: 'moonshine-js', url: 'https://esm.sh/moonshine-js?bundle' },
+        { name: '@moonshine-ai/moonshine', url: 'https://esm.sh/@moonshine-ai/moonshine?bundle' }
+      ];
+
+      let loadedModule = null;
+      for (const candidate of candidates) {
+        try {
+          log('module try', `${candidate.name} (${candidate.url})`);
+          loadedModule = await import(candidate.url);
+          engineText.textContent = `${candidate.name} via esm.sh`;
+          log('module loaded', `keys=${Object.keys(loadedModule).join(', ') || '(none)'}`);
+          break;
+        } catch (error) {
+          log('module load failed', `${candidate.name}: ${error.message || String(error)}`);
+        }
+      }
+
+      if (!loadedModule) {
+        throw new Error('Moonshine module をCDNから読み込めませんでした');
+      }
+
+      const factory = loadedModule.createTranscriber
+        || loadedModule.createMoonshine
+        || loadedModule.loadModel
+        || loadedModule.default;
+
+      if (!factory) {
+        throw new Error('Moonshine APIが見つかりません。export keysをログで確認してください。');
+      }
+
+      moonshine = typeof factory === 'function' ? await factory({ log: false }) : factory;
+
+      const callCandidates = [
+        moonshine?.transcribe,
+        moonshine?.infer,
+        moonshine?.run,
+        loadedModule?.transcribe,
+        loadedModule?.infer
+      ].filter((fn) => typeof fn === 'function');
+
+      if (callCandidates.length === 0) {
+        throw new Error('音声推論関数を特定できませんでした。');
+      }
+
+      moonshineCall = callCandidates[0].bind(callCandidates[0] === moonshine?.transcribe || callCandidates[0] === moonshine?.infer || callCandidates[0] === moonshine?.run ? moonshine : loadedModule);
+
+      setStatus('Moonshine ready');
+    }
+
+    async function transcribeBlob(blob) {
+      if (!moonshineCall) throw new Error('Moonshine is not initialized');
+      const pcm16k = await blobToFloat32(blob);
+      log('audio chunk', `${(pcm16k.length / TARGET_SAMPLE_RATE).toFixed(2)}s @${TARGET_SAMPLE_RATE}Hz`);
+
+      const started = performance.now();
+      const result = await moonshineCall(pcm16k, {
+        sampleRate: TARGET_SAMPLE_RATE,
+        language: 'en',
+        task: 'transcribe'
+      });
+
+      const took = ((performance.now() - started) / 1000).toFixed(2);
+      const text = normalizeText(result?.text || result?.transcript || result);
+      log('transcribe', `${took}s -> "${text || '(empty)'}"`);
+      return text;
+    }
+
+    async function flushChunk() {
+      if (recorderChunkBuffers.length === 0) return;
+      const blob = new Blob(recorderChunkBuffers, { type: mediaRecorder.mimeType || 'audio/webm' });
+      recorderChunkBuffers = [];
+      const text = await transcribeBlob(blob);
+      if (text) {
+        committedText = normalizeText(`${committedText} ${text}`);
+        liveText = '';
+        renderText();
+        await storageApi?.saveLatestText(committedText);
+      }
+    }
+
+    async function startRecording() {
+      if (isRecording) return;
+      if (!moonshineCall) {
+        await initMoonshine();
+      }
+
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          channelCount: 1
+        }
+      });
+
+      const types = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/mp4',
+        'audio/ogg;codecs=opus'
+      ];
+      const mimeType = types.find((t) => MediaRecorder.isTypeSupported(t)) || '';
+      mediaRecorder = new MediaRecorder(mediaStream, mimeType ? { mimeType } : undefined);
+      log('recorder mime', mediaRecorder.mimeType || '(default)');
+
+      recorderChunkBuffers = [];
+      recorderStartedAt = Date.now();
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data?.size) {
+          recorderChunkBuffers.push(event.data);
+          log('chunk', `${(event.data.size / 1024).toFixed(1)} KB`);
+        }
+      };
+
+      mediaRecorder.onerror = (event) => {
+        log('recorder error', event.error?.message || String(event.error || 'unknown'));
+        setStatus('録音エラー', 'error');
+      };
+
+      mediaRecorder.start(2000);
+      isRecording = true;
+      recordBtn.textContent = '⏹ Stop';
+      recordBtn.classList.add('active');
+      setStatus('録音中…', 'active');
+    }
+
+    async function stopRecording() {
+      if (!isRecording || !mediaRecorder) return;
+      setStatus('停止処理中…');
+      await new Promise((resolve) => {
+        mediaRecorder.onstop = resolve;
+        mediaRecorder.stop();
+      });
+
+      const elapsed = ((Date.now() - recorderStartedAt) / 1000).toFixed(1);
+      log('record stop', `${elapsed}s`);
+
+      mediaStream?.getTracks().forEach((track) => track.stop());
+      mediaStream = null;
+
+      if (parseFloat(elapsed) > MAX_CHUNK_SECONDS) {
+        log('warning', `録音が${MAX_CHUNK_SECONDS}sを超えました。端末負荷が上がる可能性があります。`);
+      }
+
+      await flushChunk();
+
+      isRecording = false;
+      mediaRecorder = null;
+      recordBtn.textContent = '🎙️ Start';
+      recordBtn.classList.remove('active');
+      if (!statusDot.classList.contains('error')) {
+        setStatus('停止しました');
+      }
+    }
+
+    recordBtn.addEventListener('click', async () => {
+      try {
+        if (isRecording) {
+          await stopRecording();
+        } else {
+          await startRecording();
+        }
+      } catch (error) {
+        log('exception', error.message || String(error));
+        setStatus(`Error: ${error.message || 'unknown'}`, 'error');
+      }
+    });
+
+    clearBtn.addEventListener('click', async () => {
+      const text = normalizeText(`${committedText} ${liveText}`);
+      if (text) {
+        await storageApi?.archiveText(text, 'clear');
+      }
+      committedText = '';
+      liveText = '';
+      renderText();
+      await storageApi?.saveLatestText('');
+      log('clear', 'text cleared');
+    });
+
+    sendBtn.addEventListener('click', async () => {
+      const text = normalizeText(`${committedText} ${liveText}`);
+      if (!text) return;
+      await storageApi?.archiveText(text, 'send');
+      committedText = '';
+      liveText = '';
+      renderText();
+      await storageApi?.saveLatestText('');
+      log('send', 'archived and reset');
+    });
+
+    async function restoreLatest() {
+      try {
+        const latest = await storageApi?.getLatestText();
+        if (latest?.body) {
+          committedText = latest.body;
+          renderText();
+          log('restore', 'latest text restored');
+        }
+      } catch (error) {
+        log('restore warning', error.message || String(error));
+      }
+    }
+
+    restoreLatest();
+    setStatus('Ready (press Start to init Moonshine)');
+  </script>
+</body>
+</html>
