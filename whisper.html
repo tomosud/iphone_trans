@@ -267,6 +267,18 @@
         env.allowLocalModels = false;
         env.useBrowserCache  = true;
 
+        const ua = navigator.userAgent || '';
+        const isIOS = /iP(hone|ad|od)/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+        const isMobile = /Android|iP(hone|ad|od)|Mobile/i.test(ua);
+        const lowMemoryDevice = typeof navigator.deviceMemory === 'number' && navigator.deviceMemory <= 4;
+        const needsStabilityMode = isIOS || (isMobile && lowMemoryDevice);
+
+        if (env.backends?.onnx?.wasm) {
+            env.backends.onnx.wasm.numThreads = needsStabilityMode
+                ? 1
+                : Math.max(1, Math.min(2, navigator.hardwareConcurrency || 1));
+        }
+
         const storageApi = window.TransStorage;
 
         // ── DOM refs ──────────────────────────────────────────────────────────
@@ -827,6 +839,40 @@
         const MAX_DISPLAY = 5;  // show last N results; older ones are still saved
         let modelLoadNonce = 0;
 
+        function getPipelineOptions(modelName) {
+            const options = { progress_callback: null };
+            if (needsStabilityMode && /moonshine/i.test(modelName)) {
+                options.device = 'wasm';
+                options.dtype = 'q8';
+            }
+            return options;
+        }
+
+        async function recoverFromRuntimeFailure(err) {
+            const msg = String(err?.message || err || '');
+            const unstable = /runtimeerror|out of memory|memory access out of bounds|abort|wasm|webgpu/i.test(msg);
+            if (!unstable || !/moonshine/i.test(modelSelect.value)) return;
+
+            addLog('🛟 安定化リカバリ: 収録停止 → tinyへ切替 → モデル再ロード');
+            await stopListening();
+            if (modelSelect.value !== 'onnx-community/moonshine-tiny-ONNX') {
+                modelSelect.value = 'onnx-community/moonshine-tiny-ONNX';
+            }
+            saveVadSettings();
+            await loadModel();
+            setStatus('Recovered after runtime error (tiny stability mode)', 'listening');
+        }
+
+        if (needsStabilityMode) {
+            const baseOption = [...modelSelect.options].find((o) => o.value === 'onnx-community/moonshine-base-ONNX');
+            if (baseOption) {
+                baseOption.textContent += ' ⚠️ iPhoneでは不安定';
+            }
+            if (!localStorage.getItem('whisper_model')) {
+                modelSelect.value = 'onnx-community/moonshine-tiny-ONNX';
+            }
+        }
+
         function renderDisplay() {
             if (results.length === 0 && !isPending) {
                 finalText.textContent = placeholderText;
@@ -870,8 +916,8 @@
                     const loggedStarts = new Set();
                     try {
                         addLog(`📦 ダウンロード/ロード試行 ${attempt}/${MAX_ATTEMPTS}`);
-                        transcriber = await pipeline('automatic-speech-recognition', modelName, {
-                            progress_callback: (p) => {
+                        const pipelineOptions = getPipelineOptions(modelName);
+                        pipelineOptions.progress_callback = (p) => {
                                 if (p?.file && !loggedStarts.has(p.file)) {
                                     loggedStarts.add(p.file);
                                     addLog(`⬇️ 取得中: ${p.file}`);
@@ -888,8 +934,9 @@
                                     progressFill.style.width = '100%';
                                     if (p?.file) addLog(`✅ 取得完了: ${p.file}`);
                                 }
-                            }
-                        });
+                            };
+                        transcriber = await pipeline('automatic-speech-recognition', modelName, pipelineOptions);
+                        addLog(`⚙️ 推論設定: device=${pipelineOptions.device || 'auto'}, dtype=${pipelineOptions.dtype || 'default'}, wasmThreads=${env.backends?.onnx?.wasm?.numThreads || 'n/a'}`);
                         break;
                     } catch (err) {
                         lastErr = err;
@@ -1011,6 +1058,7 @@
                 console.error(err);
                 results.push('⚠️ ' + err.message);
                 addLog(`❌ ASRエラー: ${elapsed}s → ${err.message}`);
+                await recoverFromRuntimeFailure(err);
             } finally {
                 // CRITICAL: always reset state even on error to prevent deadlock
                 isPending = false;
