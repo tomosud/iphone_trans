@@ -129,13 +129,10 @@
         <!-- Top: model + status -->
         <div style="display:flex;flex-direction:column;gap:10px;">
             <div class="model-select">
-                <label for="modelSelect">Model:</label>
+                <label for="modelSelect">ASR Engine:</label>
                 <select id="modelSelect">
-                    <option value="Xenova/whisper-tiny.en">whisper-tiny.en (EN only · fastest · ~75MB)</option>
-                    <option value="Xenova/whisper-base.en">whisper-base.en (EN only · better · ~142MB)</option>
-                    <option value="Xenova/whisper-small.en">whisper-small.en (EN only · best · ~244MB)</option>
-                    <option value="Xenova/whisper-tiny">whisper-tiny (multilingual · ~75MB)</option>
-                    <option value="Xenova/whisper-base">whisper-base (multilingual · ~142MB)</option>
+                    <option value="onnx-community/moonshine-tiny-ONNX">moonshine-tiny (multilingual · fastest)</option>
+                    <option value="onnx-community/moonshine-base-ONNX">moonshine-base (multilingual · better)</option>
                 </select>
             </div>
             <div class="model-select" style="margin-top:6px;">
@@ -263,7 +260,7 @@
 
     <script src="storage.js"></script>
     <script type="module">
-        import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
+        import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.2';
 
         env.allowLocalModels = false;
         env.useBrowserCache  = true;
@@ -842,7 +839,7 @@
         // ── Model loading ─────────────────────────────────────────────────────
         async function loadModel() {
             const modelName = modelSelect.value;
-            setStatus('Loading model…', 'loading');
+            setStatus('Loading ASR model…', 'loading');
             progressBar.classList.add('visible');
             progressFill.style.width = '0%';
             recordBtn.disabled = true;
@@ -854,7 +851,7 @@
                         if (p.status === 'progress') {
                             const pct = Math.round((p.loaded / p.total) * 100);
                             progressFill.style.width = `${pct}%`;
-                            setStatus(`Downloading… ${pct}%`, 'loading');
+                            setStatus(`Downloading model… ${pct}%`, 'loading');
                         } else if (p.status === 'done') {
                             progressFill.style.width = '100%';
                         }
@@ -919,23 +916,21 @@
             renderDisplay();
             stopRecTimer();
             startProcTimer(audioSec);
-            const isEnOnly = modelSelect.value.includes('.en');
-            const selectedLang = isEnOnly ? 'en' : (langSelect.value || null);
+            const selectedLang = langSelect.value || null;
             const modelName    = modelSelect.value.split('/').pop();
-            addLog(`⚙️ Whisper開始: 音声 ${audioSec.toFixed(2)}s  rms=${rmsIn.toFixed(4)}  model=${modelName}  lang=${selectedLang ?? 'auto'}`);
+            addLog(`⚙️ ASR開始: 音声 ${audioSec.toFixed(2)}s  rms=${rmsIn.toFixed(4)}  model=${modelName}  lang=${selectedLang ?? 'auto'}`);
 
             const t0 = Date.now();
             try {
                 // Timeout: abort if Whisper hangs for more than 60s
                 const timeoutMs = Math.max(60000, audioSec * 10000);
-                const transcribePromise = transcriber(normalizedAudio, {
-                    language: selectedLang,
-                    task: 'transcribe',
-                    chunk_length_s: 15,
-                    stride_length_s: 3,
-                });
+                const transcribeOptions = { task: 'transcribe' };
+                if (selectedLang) {
+                    transcribeOptions.language = selectedLang;
+                }
+                const transcribePromise = transcriber(normalizedAudio, transcribeOptions);
                 const timeoutPromise = new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error('Whisper timeout')), timeoutMs)
+                    setTimeout(() => reject(new Error('ASR timeout')), timeoutMs)
                 );
                 const res = await Promise.race([transcribePromise, timeoutPromise]);
                 const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
@@ -944,15 +939,15 @@
                     results.push(text);
                     accumulatedText = results.join('\n');
                     void storageApi.saveLatestText(accumulatedText);
-                    addLog(`✅ Whisper完了: ${elapsed}s → "${text.slice(0, 60)}${text.length > 60 ? '…' : ''}"`);
+                    addLog(`✅ ASR完了: ${elapsed}s → "${text.slice(0, 60)}${text.length > 60 ? '…' : ''}"`);
                 } else {
-                    addLog(`⚠️ Whisper完了: ${elapsed}s → 空 (無音 or ノイズのみ?)`);
+                    addLog(`⚠️ ASR完了: ${elapsed}s → 空 (無音 or ノイズのみ?)`);
                 }
             } catch (err) {
                 const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
                 console.error(err);
                 results.push('⚠️ ' + err.message);
-                addLog(`❌ Whisperエラー: ${elapsed}s → ${err.message}`);
+                addLog(`❌ ASRエラー: ${elapsed}s → ${err.message}`);
             } finally {
                 // CRITICAL: always reset state even on error to prevent deadlock
                 isPending = false;
