@@ -24,3 +24,10 @@ https://github.com/user-attachments/assets/f02c41a9-7214-4c01-94d3-bad89a21a940
 保存されたMEMOにアクセスできます。３００件まで残ります。
 ローカルに一時保存（indexdDB）されていますが、様々なタイミングで自動で消されますので、早めに退避してください。
 クリップボードコピーと、削除が可能です。
+
+
+## Moonshine ASR (新動線)
+
+トップページから `🎙️ Moonshine ASR` を開くと `moonshine.html` に遷移します。
+このページは **Web Speech API ではなく**、`MediaRecorder + Moonshine JS` を使う軽量経路を試行します。
+読み込みや推論に失敗した場合の原因切り分けのため、画面内 log に詳細を出力します。
