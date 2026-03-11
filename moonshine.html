@@ -76,17 +76,10 @@
     const logBox = document.getElementById('logBox');
     const engineText = document.getElementById('engineText');
 
-    const TARGET_SAMPLE_RATE = 16000;
-    const MAX_CHUNK_SECONDS = 8;
-
     let liveText = '';
     let committedText = '';
     let isRecording = false;
-    let mediaStream = null;
-    let mediaRecorder = null;
-    let recorderChunkBuffers = [];
-    let recorderStartedAt = 0;
-    let moonshine = null;
+    let microphoneTranscriber = null;
     let moonshineCall = null;
 
     function log(message, detail) {
@@ -108,56 +101,22 @@
       finalText.textContent = `${committedText} ${liveText}`.trim();
     }
 
+    function setRecordingUiState(active) {
+      isRecording = active;
+      recordBtn.textContent = active ? '⏹ Stop' : '🎙️ Start';
+      recordBtn.classList.toggle('active', active);
+    }
+
     function normalizeText(value) {
       return String(value || '').replace(/\s+/g, ' ').trim();
-    }
-
-    async function blobToFloat32(blob) {
-      const buffer = await blob.arrayBuffer();
-      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-      const decoded = await audioContext.decodeAudioData(buffer.slice(0));
-      const mono = decoded.numberOfChannels === 1
-        ? decoded.getChannelData(0)
-        : mixdownToMono(decoded);
-      const resampled = resampleLinear(mono, decoded.sampleRate, TARGET_SAMPLE_RATE);
-      await audioContext.close();
-      return resampled;
-    }
-
-    function mixdownToMono(audioBuffer) {
-      const length = audioBuffer.length;
-      const out = new Float32Array(length);
-      for (let ch = 0; ch < audioBuffer.numberOfChannels; ch += 1) {
-        const data = audioBuffer.getChannelData(ch);
-        for (let i = 0; i < length; i += 1) {
-          out[i] += data[i] / audioBuffer.numberOfChannels;
-        }
-      }
-      return out;
-    }
-
-    function resampleLinear(input, inRate, outRate) {
-      if (inRate === outRate) return input;
-      const ratio = inRate / outRate;
-      const outLength = Math.max(1, Math.round(input.length / ratio));
-      const out = new Float32Array(outLength);
-      for (let i = 0; i < outLength; i += 1) {
-        const x = i * ratio;
-        const i0 = Math.floor(x);
-        const i1 = Math.min(i0 + 1, input.length - 1);
-        const frac = x - i0;
-        out[i] = input[i0] * (1 - frac) + input[i1] * frac;
-      }
-      return out;
     }
 
     async function initMoonshine() {
       setStatus('Moonshine module loading…');
 
       const candidates = [
-        { name: '@moonshine-ai/moonshine-js', url: 'https://esm.sh/@moonshine-ai/moonshine-js?bundle' },
-        { name: 'moonshine-js', url: 'https://esm.sh/moonshine-js?bundle' },
-        { name: '@moonshine-ai/moonshine', url: 'https://esm.sh/@moonshine-ai/moonshine?bundle' }
+        { name: 'jsdelivr', url: 'https://cdn.jsdelivr.net/npm/@moonshine-ai/moonshine-js@latest/dist/moonshine.min.js' },
+        { name: 'esm.sh', url: 'https://esm.sh/@moonshine-ai/moonshine-js?bundle' }
       ];
 
       let loadedModule = null;
@@ -177,81 +136,44 @@
         throw new Error('Moonshine module をCDNから読み込めませんでした');
       }
 
-      const factory = loadedModule.createTranscriber
-        || loadedModule.createMoonshine
-        || loadedModule.loadModel
-        || loadedModule.MoonshineSpeechRecognition
-        || loadedModule.Transcriber
-        || loadedModule.default;
-
-      if (!factory) {
-        throw new Error('Moonshine APIが見つかりません。export keysをログで確認してください。');
+      const MicrophoneTranscriber = loadedModule?.MicrophoneTranscriber;
+      if (typeof MicrophoneTranscriber !== 'function') {
+        throw new Error('MicrophoneTranscriber が見つかりませんでした。');
       }
 
-      if (typeof factory === 'function') {
-        const createOptions = {
-          log: false,
-          logger: null,
-          language: 'en'
-        };
-        try {
-          moonshine = await factory(createOptions);
-        } catch (_error) {
-          moonshine = new factory(createOptions);
-        }
-      } else {
-        moonshine = factory;
+      microphoneTranscriber = new MicrophoneTranscriber(
+        'model/tiny',
+        {
+          onTranscriptionCommitted(text) {
+            const normalized = normalizeText(text);
+            if (!normalized) return;
+            committedText = normalizeText(`${committedText} ${normalized}`);
+            liveText = '';
+            renderText();
+            void storageApi?.saveLatestText(committedText);
+            log('commit', normalized);
+          },
+          onTranscriptionUpdated(text) {
+            liveText = normalizeText(text);
+            renderText();
+          },
+          onError(error) {
+            const message = error?.message || String(error || 'unknown');
+            log('transcriber error', message);
+            setRecordingUiState(false);
+            setStatus(`Error: ${message}`, 'error');
+          }
+        },
+        false
+      );
+
+      if (typeof microphoneTranscriber.start !== 'function' || typeof microphoneTranscriber.stop !== 'function') {
+        throw new Error('MicrophoneTranscriber の start/stop が利用できません。');
       }
 
-      const callCandidates = [
-        { fn: moonshine?.transcribe, owner: moonshine },
-        { fn: moonshine?.transcribeFromAudio, owner: moonshine },
-        { fn: moonshine?.recognize, owner: moonshine },
-        { fn: moonshine?.process, owner: moonshine },
-        { fn: moonshine?.infer, owner: moonshine },
-        { fn: moonshine?.run, owner: moonshine },
-        { fn: loadedModule?.transcribe, owner: loadedModule },
-        { fn: loadedModule?.infer, owner: loadedModule }
-      ].filter((entry) => typeof entry.fn === 'function');
-
-      if (callCandidates.length === 0) {
-        throw new Error('音声推論関数を特定できませんでした。');
-      }
-
-      moonshineCall = callCandidates[0].fn.bind(callCandidates[0].owner);
+      moonshineCall = microphoneTranscriber;
 
       setStatus('Moonshine ready');
-    }
-
-    async function transcribeBlob(blob) {
-      if (!moonshineCall) throw new Error('Moonshine is not initialized');
-      const pcm16k = await blobToFloat32(blob);
-      log('audio chunk', `${(pcm16k.length / TARGET_SAMPLE_RATE).toFixed(2)}s @${TARGET_SAMPLE_RATE}Hz`);
-
-      const started = performance.now();
-      const result = await moonshineCall(pcm16k, {
-        sampleRate: TARGET_SAMPLE_RATE,
-        language: 'en',
-        task: 'transcribe'
-      });
-
-      const took = ((performance.now() - started) / 1000).toFixed(2);
-      const text = normalizeText(result?.text || result?.transcript || result);
-      log('transcribe', `${took}s -> "${text || '(empty)'}"`);
-      return text;
-    }
-
-    async function flushChunk() {
-      if (recorderChunkBuffers.length === 0) return;
-      const blob = new Blob(recorderChunkBuffers, { type: mediaRecorder.mimeType || 'audio/webm' });
-      recorderChunkBuffers = [];
-      const text = await transcribeBlob(blob);
-      if (text) {
-        committedText = normalizeText(`${committedText} ${text}`);
-        liveText = '';
-        renderText();
-        await storageApi?.saveLatestText(committedText);
-      }
     }
 
     async function startRecording() {
@@ -260,69 +182,19 @@
         await initMoonshine();
       }
 
-      mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          channelCount: 1
-        }
-      });
-
-      const types = [
-        'audio/webm;codecs=opus',
-        'audio/webm',
-        'audio/mp4',
-        'audio/ogg;codecs=opus'
-      ];
-      const mimeType = types.find((t) => MediaRecorder.isTypeSupported(t)) || '';
-      mediaRecorder = new MediaRecorder(mediaStream, mimeType ? { mimeType } : undefined);
-      log('recorder mime', mediaRecorder.mimeType || '(default)');
-
-      recorderChunkBuffers = [];
-      recorderStartedAt = Date.now();
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data?.size) {
-          recorderChunkBuffers.push(event.data);
-          log('chunk', `${(event.data.size / 1024).toFixed(1)} KB`);
-        }
-      };
-
-      mediaRecorder.onerror = (event) => {
-        log('recorder error', event.error?.message || String(event.error || 'unknown'));
-        setStatus('録音エラー', 'error');
-      };
-
-      mediaRecorder.start(2000);
-      isRecording = true;
-      recordBtn.textContent = '⏹ Stop';
-      recordBtn.classList.add('active');
+      await moonshineCall.start();
+      setRecordingUiState(true);
       setStatus('録音中…', 'active');
+      log('record', 'microphone transcriber started');
     }
 
     async function stopRecording() {
-      if (!isRecording || !mediaRecorder) return;
+      if (!isRecording || !moonshineCall) return;
       setStatus('停止処理中…');
-      await new Promise((resolve) => {
-        mediaRecorder.onstop = resolve;
-        mediaRecorder.stop();
-      });
+      await moonshineCall.stop();
+      log('record stop', 'microphone transcriber stopped');
 
-      const elapsed = ((Date.now() - recorderStartedAt) / 1000).toFixed(1);
-      log('record stop', `${elapsed}s`);
-
-      mediaStream?.getTracks().forEach((track) => track.stop());
-      mediaStream = null;
-
-      if (parseFloat(elapsed) > MAX_CHUNK_SECONDS) {
-        log('warning', `録音が${MAX_CHUNK_SECONDS}sを超えました。端末負荷が上がる可能性があります。`);
-      }
-
-      await flushChunk();
-
-      isRecording = false;
-      mediaRecorder = null;
-      recordBtn.textContent = '🎙️ Start';
-      recordBtn.classList.remove('active');
+      setRecordingUiState(false);
       if (!statusDot.classList.contains('error')) {
         setStatus('停止しました');
       }
