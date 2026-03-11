@@ -66,6 +66,8 @@
 
   <script src="storage.js"></script>
   <script type="module">
+    import * as Moonshine from 'https://cdn.jsdelivr.net/npm/@moonshine-ai/moonshine-js@latest/dist/moonshine.min.js';
+
     const storageApi = window.TransStorage;
     const finalText = document.getElementById('finalText');
     const recordBtn = document.getElementById('recordBtn');
@@ -76,140 +78,147 @@
     const logBox = document.getElementById('logBox');
     const engineText = document.getElementById('engineText');
 
+    let transcriber = null;
+    let started = false;
     let liveText = '';
     let committedText = '';
-    let isRecording = false;
-    let microphoneTranscriber = null;
-    let moonshineCall = null;
 
-    function log(message, detail) {
+    function normalizeText(value) {
+      return String(value || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function renderText() {
+      finalText.textContent = normalizeText(`${committedText} ${liveText}`);
+    }
+
+    function log(...args) {
       const now = new Date();
       const ts = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
-      const line = detail ? `[${ts}] ${message} ${detail}` : `[${ts}] ${message}`;
-      logBox.textContent = `${line}\n${logBox.textContent}`.slice(0, 3600);
-      console.log('[moonshine]', message, detail || '');
+      const line = args.map((v) => (typeof v === 'string' ? v : JSON.stringify(v))).join(' ');
+      logBox.textContent = `[${ts}] ${line}\n${logBox.textContent}`.slice(0, 3600);
+      console.log('[moonshine]', line);
     }
 
     function setStatus(message, state = 'idle') {
       statusText.textContent = message;
       statusDot.classList.toggle('active', state === 'active');
       statusDot.classList.toggle('error', state === 'error');
-      log('status:', message);
-    }
-
-    function renderText() {
-      finalText.textContent = `${committedText} ${liveText}`.trim();
     }
 
     function setRecordingUiState(active) {
-      isRecording = active;
       recordBtn.textContent = active ? '⏹ Stop' : '🎙️ Start';
       recordBtn.classList.toggle('active', active);
     }
 
-    function normalizeText(value) {
-      return String(value || '').replace(/\s+/g, ' ').trim();
-    }
-
-    async function initMoonshine() {
-      setStatus('Moonshine module loading…');
-
-      const candidates = [
-        { name: 'jsdelivr', url: 'https://cdn.jsdelivr.net/npm/@moonshine-ai/moonshine-js@latest/dist/moonshine.min.js' },
-        { name: 'esm.sh', url: 'https://esm.sh/@moonshine-ai/moonshine-js?bundle' }
-      ];
-
-      let loadedModule = null;
-      for (const candidate of candidates) {
-        try {
-          log('module try', `${candidate.name} (${candidate.url})`);
-          loadedModule = await import(candidate.url);
-          engineText.textContent = `${candidate.name} via esm.sh`;
-          log('module loaded', `keys=${Object.keys(loadedModule).join(', ') || '(none)'}`);
-          break;
-        } catch (error) {
-          log('module load failed', `${candidate.name}: ${error.message || String(error)}`);
-        }
+    async function ensureTranscriber() {
+      if (transcriber) {
+        return;
       }
 
-      if (!loadedModule) {
-        throw new Error('Moonshine module をCDNから読み込めませんでした');
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error('getUserMedia unavailable');
       }
 
-      const MicrophoneTranscriber = loadedModule?.MicrophoneTranscriber;
+      const MicrophoneTranscriber = Moonshine?.MicrophoneTranscriber;
       if (typeof MicrophoneTranscriber !== 'function') {
-        throw new Error('MicrophoneTranscriber が見つかりませんでした。');
+        throw new Error('MicrophoneTranscriber unavailable');
       }
 
-      microphoneTranscriber = new MicrophoneTranscriber(
+      log('creating transcriber...');
+
+      transcriber = new MicrophoneTranscriber(
         'model/tiny',
         {
-          onTranscriptionCommitted(text) {
-            const normalized = normalizeText(text);
-            if (!normalized) return;
-            committedText = normalizeText(`${committedText} ${normalized}`);
-            liveText = '';
-            renderText();
-            void storageApi?.saveLatestText(committedText);
-            log('commit', normalized);
+          onPermissionsRequested() {
+            log('permissions requested');
+            setStatus('マイク権限を要求中…');
+          },
+          onModelLoadStarted() {
+            log('model load started');
+            setStatus('モデルをロード中…');
+          },
+          onModelLoaded() {
+            log('model loaded');
+            setStatus('モデル読み込み完了');
+          },
+          onTranscribeStarted() {
+            log('transcribe started');
+            setStatus('録音中…', 'active');
+          },
+          onTranscribeStopped() {
+            log('transcribe stopped');
+            started = false;
+            setRecordingUiState(false);
+            setStatus('停止しました');
           },
           onTranscriptionUpdated(text) {
             liveText = normalizeText(text);
             renderText();
+            log('update:', liveText || '');
+          },
+          onTranscriptionCommitted(text) {
+            const normalized = normalizeText(text);
+            if (!normalized) {
+              return;
+            }
+            committedText = normalizeText(`${committedText} ${normalized}`);
+            liveText = '';
+            renderText();
+            void storageApi?.saveLatestText(committedText);
+            log('commit:', normalized);
           },
           onError(error) {
-            const message = error?.message || String(error || 'unknown');
-            log('transcriber error', message);
+            const message = error?.message || String(error);
+            log('error:', message);
+            started = false;
             setRecordingUiState(false);
             setStatus(`Error: ${message}`, 'error');
           }
         },
-        false
+        true
       );
 
-      if (typeof microphoneTranscriber.start !== 'function' || typeof microphoneTranscriber.stop !== 'function') {
-        throw new Error('MicrophoneTranscriber の start/stop が利用できません。');
-      }
-
-      moonshineCall = microphoneTranscriber;
-
-      setStatus('Moonshine ready');
+      engineText.textContent = 'Moonshine JS @ jsDelivr (model/tiny, VAD=true)';
     }
 
-    async function startRecording() {
-      if (isRecording) return;
-      if (!moonshineCall) {
-        await initMoonshine();
+    async function initAndStart() {
+      try {
+        log('Start clicked');
+        await ensureTranscriber();
+        await transcriber.start();
+        started = true;
+        setRecordingUiState(true);
+        setStatus('録音中…', 'active');
+        log('start ok');
+      } catch (error) {
+        const message = error?.message || String(error);
+        log('fatal:', message, error?.stack || '');
+        setStatus(`Error: ${message}`, 'error');
       }
-
-      await moonshineCall.start();
-      setRecordingUiState(true);
-      setStatus('録音中…', 'active');
-      log('record', 'microphone transcriber started');
     }
 
-    async function stopRecording() {
-      if (!isRecording || !moonshineCall) return;
-      setStatus('停止処理中…');
-      await moonshineCall.stop();
-      log('record stop', 'microphone transcriber stopped');
-
-      setRecordingUiState(false);
-      if (!statusDot.classList.contains('error')) {
-        setStatus('停止しました');
+    async function stopNow() {
+      try {
+        if (!transcriber || !started) {
+          return;
+        }
+        setStatus('停止処理中…');
+        await transcriber.stop();
+        started = false;
+        setRecordingUiState(false);
+        log('stopped');
+      } catch (error) {
+        const message = error?.message || String(error);
+        log('stop error:', message);
+        setStatus(`Error: ${message}`, 'error');
       }
     }
 
     recordBtn.addEventListener('click', async () => {
-      try {
-        if (isRecording) {
-          await stopRecording();
-        } else {
-          await startRecording();
-        }
-      } catch (error) {
-        log('exception', error.message || String(error));
-        setStatus(`Error: ${error.message || 'unknown'}`, 'error');
+      if (started) {
+        await stopNow();
+      } else {
+        await initAndStart();
       }
     });
 
@@ -227,7 +236,9 @@
 
     sendBtn.addEventListener('click', async () => {
       const text = normalizeText(`${committedText} ${liveText}`);
-      if (!text) return;
+      if (!text) {
+        return;
+      }
       await storageApi?.archiveText(text, 'send');
       committedText = '';
       liveText = '';
@@ -240,12 +251,12 @@
       try {
         const latest = await storageApi?.getLatestText();
         if (latest?.body) {
-          committedText = latest.body;
+          committedText = normalizeText(latest.body);
           renderText();
           log('restore', 'latest text restored');
         }
       } catch (error) {
-        log('restore warning', error.message || String(error));
+        log('restore warning', error?.message || String(error));
       }
     }
 
