@@ -43,10 +43,6 @@
         <span class="meta-label">engine</span>
         <span id="engineText" class="model-path">Moonshine JS (CDN auto-detect)</span>
       </div>
-      <div class="meta-row" style="margin-top:10px; align-items:flex-start;">
-        <span class="meta-label">log</span>
-        <pre id="logBox" class="model-path" style="white-space:pre-wrap; line-height:1.35; min-height:88px; max-height:220px; overflow:auto; margin:0; width:min(100%, 560px);"></pre>
-      </div>
     </section>
 
     <section class="display-panel">
@@ -58,6 +54,13 @@
     <section class="nav-panel" translate="no">
       <div style="margin-bottom:8px;"><a class="nav-link-button" href="index.html">← Home</a></div>
       <a class="nav-link-button" href="saved.html">Open saved texts</a>
+    </section>
+
+    <section class="input-panel">
+      <div class="meta-row" style="align-items:flex-start;">
+        <span class="meta-label">log</span>
+        <pre id="logBox" class="model-path" style="white-space:pre-wrap; line-height:1.35; min-height:88px; max-height:220px; overflow:auto; margin:0; width:min(100%, 560px);"></pre>
+      </div>
     </section>
   </main>
 
@@ -177,27 +180,45 @@
       const factory = loadedModule.createTranscriber
         || loadedModule.createMoonshine
         || loadedModule.loadModel
+        || loadedModule.MoonshineSpeechRecognition
+        || loadedModule.Transcriber
         || loadedModule.default;
 
       if (!factory) {
         throw new Error('Moonshine APIが見つかりません。export keysをログで確認してください。');
       }
 
-      moonshine = typeof factory === 'function' ? await factory({ log: false }) : factory;
+      if (typeof factory === 'function') {
+        const createOptions = {
+          log: false,
+          logger: null,
+          language: 'en'
+        };
+        try {
+          moonshine = await factory(createOptions);
+        } catch (_error) {
+          moonshine = new factory(createOptions);
+        }
+      } else {
+        moonshine = factory;
+      }
 
       const callCandidates = [
-        moonshine?.transcribe,
-        moonshine?.infer,
-        moonshine?.run,
-        loadedModule?.transcribe,
-        loadedModule?.infer
-      ].filter((fn) => typeof fn === 'function');
+        { fn: moonshine?.transcribe, owner: moonshine },
+        { fn: moonshine?.transcribeFromAudio, owner: moonshine },
+        { fn: moonshine?.recognize, owner: moonshine },
+        { fn: moonshine?.process, owner: moonshine },
+        { fn: moonshine?.infer, owner: moonshine },
+        { fn: moonshine?.run, owner: moonshine },
+        { fn: loadedModule?.transcribe, owner: loadedModule },
+        { fn: loadedModule?.infer, owner: loadedModule }
+      ].filter((entry) => typeof entry.fn === 'function');
 
       if (callCandidates.length === 0) {
         throw new Error('音声推論関数を特定できませんでした。');
       }
 
-      moonshineCall = callCandidates[0].bind(callCandidates[0] === moonshine?.transcribe || callCandidates[0] === moonshine?.infer || callCandidates[0] === moonshine?.run ? moonshine : loadedModule);
+      moonshineCall = callCandidates[0].fn.bind(callCandidates[0].owner);
 
       setStatus('Moonshine ready');
     }
