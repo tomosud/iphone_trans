@@ -129,12 +129,10 @@
         <!-- Top: model + status -->
         <div style="display:flex;flex-direction:column;gap:10px;">
             <div class="model-select">
-                <label for="modelSelect">Model:</label>
+                <label for="modelSelect">ASR Engine:</label>
                 <select id="modelSelect">
-                    <option value="Xenova/whisper-tiny.en">whisper-tiny.en (EN only · fastest · ~75MB)</option>
-                    <option value="Xenova/whisper-base.en">whisper-base.en (EN only · better · ~142MB)</option>
-                    <option value="Xenova/whisper-tiny">whisper-tiny (multilingual · ~75MB)</option>
-                    <option value="Xenova/whisper-base">whisper-base (multilingual · ~142MB)</option>
+                    <option value="onnx-community/whisper-tiny">whisper-tiny (multilingual · stable)</option>
+                    <option value="onnx-community/whisper-base">whisper-base (multilingual · better)</option>
                 </select>
             </div>
             <div class="model-select" style="margin-top:6px;">
@@ -229,43 +227,27 @@
         </details>
     </div>
 
-    <!-- Radio stream test -->
-    <div style="max-width:900px;margin:12px auto 28px;padding:0 var(--gap);">
-        <details style="font-size:0.85rem;">
-            <summary style="cursor:pointer;color:var(--muted);user-select:none;padding:4px 0;">📻 ストリーミングラジオで試す</summary>
-            <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px;">
-                <div style="font-size:0.78rem;color:var(--muted);">VAD → Whisper パイプラインをラジオ音源でテストします。<strong>CORS必須</strong>: サーバーが <code>Access-Control-Allow-Origin: *</code> を返す局のみ動作します。</div>
-                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                    <select id="radioStreamSelect" style="flex:1;min-width:180px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--fg);font-size:0.85rem;">
-                        <optgroup label="トーク・ニュース (CORS確認済み/期待)">
-                            <option value="https://stream.live.vc.bbcmedia.co.uk/bbc_world_service">BBC World Service – ニュース (英語)</option>
-                            <option value="https://icecast.radiofrance.fr/franceinfo-midfi.mp3">France Info – ニュース (仏語)</option>
-                            <option value="https://icecast.radiofrance.fr/franceinter-midfi.mp3">France Inter – トーク/音楽 (仏語)</option>
-                            <option value="https://st01.sslstream.dlf.de/dlf/01/128/mp3/stream.mp3">Deutschlandfunk – ニュース (独語)</option>
-                        </optgroup>
-                        <optgroup label="音楽 (CORSテスト用)">
-                            <option value="https://ice2.somafm.com/groovesalad-128-mp3">SomaFM – Groove Salad ✓動作確認</option>
-                            <option value="https://stream.radioparadise.com/mp3-128">Radio Paradise</option>
-                            <option value="https://ice1.somafm.com/illstreet-128-mp3">SomaFM – Ill Street Blues</option>
-                        </optgroup>
-                        <option value="custom">── カスタムURL ──</option>
-                    </select>
-                    <button id="radioTestBtn" style="padding:6px 16px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--fg);font-size:0.85rem;cursor:pointer;white-space:nowrap;">▶ 開始</button>
-                </div>
-                <div id="radioCustomUrlWrap" style="display:none;">
-                    <input id="radioCustomUrl" type="url" placeholder="https://example.com/stream.mp3" style="width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--fg);font-size:0.85rem;">
-                </div>
-                <div id="radioStatus" style="font-size:0.78rem;color:var(--muted);min-height:1.2em;"></div>
-            </div>
-        </details>
-    </div>
+
 
     <script src="storage.js"></script>
     <script type="module">
-        import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
+        // Uses transformers.js ASR pipelines (Moonshine + Whisper).
+        import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2';
 
         env.allowLocalModels = false;
         env.useBrowserCache  = true;
+
+        const ua = navigator.userAgent || '';
+        const isIOS = /iP(hone|ad|od)/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+        const isMobile = /Android|iP(hone|ad|od)|Mobile/i.test(ua);
+        const lowMemoryDevice = typeof navigator.deviceMemory === 'number' && navigator.deviceMemory <= 4;
+        const needsStabilityMode = isIOS || (isMobile && lowMemoryDevice);
+
+        if (env.backends?.onnx?.wasm) {
+            env.backends.onnx.wasm.numThreads = needsStabilityMode
+                ? 1
+                : Math.max(1, Math.min(2, navigator.hardwareConcurrency || 1));
+        }
 
         const storageApi = window.TransStorage;
 
@@ -516,7 +498,9 @@
 
         function storeAudioClip(audio, sec) {
             const t = new Date().toLocaleTimeString('ja-JP');
-            recentAudioClips.push({ t, sec, audio: audio.slice() });
+            const maxSamples = Math.floor(MAX_DEBUG_CLIP_SEC * SAMPLE_RATE);
+            const clipAudio = audio.length > maxSamples ? audio.slice(audio.length - maxSamples) : audio.slice();
+            recentAudioClips.push({ t, sec, audio: clipAudio });
             if (recentAudioClips.length > MAX_AUDIO_CLIPS) recentAudioClips.shift();
             renderAudioClips();
             if (!audioClipsDetails.open) {
@@ -825,6 +809,60 @@
         }
 
         const MAX_DISPLAY = 5;  // show last N results; older ones are still saved
+        const MAX_SEGMENT_SEC = 12;
+        const MAX_QUEUE_ITEMS = 2;
+        const MAX_DEBUG_CLIP_SEC = 8;
+        let modelLoadNonce = 0;
+
+        async function disposeTranscriber() {
+            if (!transcriber?.dispose) return;
+            try {
+                await transcriber.dispose();
+                addLog('♻️ 既存モデルを破棄');
+            } catch (e) {
+                addLog(`⚠️ モデル破棄エラー: ${e.message}`);
+            } finally {
+                transcriber = null;
+            }
+        }
+
+        async function hardMemoryCleanup() {
+            await disposeTranscriber();
+            transcribeQueue = [];
+            transcribeQueueSec = 0;
+            if (typeof globalThis.gc === 'function') {
+                try { globalThis.gc(); } catch (_) {}
+            }
+            await new Promise((r) => setTimeout(r, 50));
+        }
+
+        function getPipelineOptions(modelName) {
+            const options = { progress_callback: null };
+            if (needsStabilityMode && /moonshine/i.test(modelName)) {
+                options.device = 'wasm';
+                options.dtype = 'q4';
+            }
+            return options;
+        }
+
+        async function recoverFromRuntimeFailure(err) {
+            const msg = String(err?.message || err || '');
+            const unstable = /runtimeerror|out of memory|memory access out of bounds|abort|wasm|webgpu/i.test(msg);
+            if (!unstable || !/moonshine/i.test(modelSelect.value)) return;
+
+            addLog('🛟 安定化リカバリ: 収録停止 → tinyへ切替 → モデル再ロード');
+            await stopListening();
+            if (modelSelect.value !== 'onnx-community/whisper-tiny') {
+                modelSelect.value = 'onnx-community/whisper-tiny';
+            }
+            saveVadSettings();
+            await loadModel();
+            setStatus('Recovered after runtime error (fallback: whisper-tiny)', 'listening');
+        }
+
+        if (needsStabilityMode && !localStorage.getItem('whisper_model')) {
+            modelSelect.value = 'onnx-community/whisper-tiny';
+        }
 
         function renderDisplay() {
             if (results.length === 0 && !isPending) {
@@ -841,41 +879,112 @@
         // ── Model loading ─────────────────────────────────────────────────────
         async function loadModel() {
             const modelName = modelSelect.value;
-            setStatus('Loading model…', 'loading');
+            const loadNonce = ++modelLoadNonce;
+            const shortName = modelName.split('/').pop();
+            const t0 = performance.now();
+            setStatus('Loading ASR model…', 'loading');
             progressBar.classList.add('visible');
             progressFill.style.width = '0%';
             recordBtn.disabled = true;
             modelSelect.disabled = true;
+            addLog(`🧠 モデルロード開始: ${shortName}`);
+
+            // Model changed while previous instance exists → dispose old pipeline first.
+            await disposeTranscriber();
 
             try {
-                transcriber = await pipeline('automatic-speech-recognition', modelName, {
-                    progress_callback: (p) => {
-                        if (p.status === 'progress') {
-                            const pct = Math.round((p.loaded / p.total) * 100);
-                            progressFill.style.width = `${pct}%`;
-                            setStatus(`Downloading… ${pct}%`, 'loading');
-                        } else if (p.status === 'done') {
-                            progressFill.style.width = '100%';
-                        }
+                const MAX_ATTEMPTS = 2;
+                let lastErr = null;
+                for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+                    const loggedStarts = new Set();
+                    try {
+                        addLog(`📦 ダウンロード/ロード試行 ${attempt}/${MAX_ATTEMPTS}`);
+                        const pipelineOptions = getPipelineOptions(modelName);
+                        pipelineOptions.progress_callback = (p) => {
+                                if (p?.file && !loggedStarts.has(p.file)) {
+                                    loggedStarts.add(p.file);
+                                    addLog(`⬇️ 取得中: ${p.file}`);
+                                }
+                                if (p.status === 'progress') {
+                                    const pct = p.total > 0 ? Math.round((p.loaded / p.total) * 100) : null;
+                                    if (pct != null) {
+                                        progressFill.style.width = `${pct}%`;
+                                        setStatus(`Downloading model… ${pct}%`, 'loading');
+                                    } else {
+                                        setStatus(`Downloading model… ${Math.round((p.loaded || 0) / 1024)}KB`, 'loading');
+                                    }
+                                } else if (p.status === 'done') {
+                                    progressFill.style.width = '100%';
+                                    if (p?.file) addLog(`✅ 取得完了: ${p.file}`);
+                                }
+                            };
+                        transcriber = await pipeline('automatic-speech-recognition', modelName, pipelineOptions);
+                        addLog(`⚙️ 推論設定: device=${pipelineOptions.device || 'auto'}, dtype=${pipelineOptions.dtype || 'default'}, wasmThreads=${env.backends?.onnx?.wasm?.numThreads || 'n/a'}`);
+                        break;
+                    } catch (err) {
+                        lastErr = err;
+                        const transient = /fetch|network|timeout|abort|load failed/i.test(err.message || '');
+                        addLog(`❌ モデルロード失敗(試行${attempt}): ${err.message}`);
+                        if (!transient || attempt === MAX_ATTEMPTS) throw err;
+                        addLog('🔁 一時的エラーのためリトライします…');
+                        await new Promise(r => setTimeout(r, 800));
                     }
-                });
+                }
+
+                if (!transcriber && lastErr) throw lastErr;
+
+                if (loadNonce !== modelLoadNonce) {
+                    addLog('ℹ️ 新しいロード要求が来たため、旧ロード結果を破棄');
+                    return;
+                }
+
+                const sec = ((performance.now() - t0) / 1000).toFixed(1);
+                addLog(`✅ モデルロード完了: ${shortName} (${sec}s)`);
                 setStatus('Ready — tap Start to listen', 'listening');
                 recordBtn.disabled = false;
                 document.getElementById('sampleLongBtn').disabled = false;
                 setTimeout(() => progressBar.classList.remove('visible'), 800);
             } catch (err) {
                 console.error(err);
+                addLog(`❌ モデルロード最終失敗: ${err.message}`);
                 setStatus('Model load failed: ' + err.message, '');
+            } finally {
+                if (loadNonce !== modelLoadNonce) {
+                    addLog('ℹ️ 古いロード処理を終了');
+                    return;
+                }
+                modelSelect.disabled = false;
+                if (!transcriber) {
+                    progressBar.classList.remove('visible');
+                    progressFill.style.width = '0%';
+                }
             }
-            modelSelect.disabled = false;
         }
 
         // ── Transcribe a collected speech segment ─────────────────────────────
         // If already processing, queue the segment and process all segments in order.
         function transcribeSegment(chunks) {
             if (!transcriber || chunks.length < MIN_SPEECH_CHUNKS) return;
-            const sec = chunks.reduce((a, c) => a + c.length, 0) / SAMPLE_RATE;
+            const maxSamples = Math.floor(MAX_SEGMENT_SEC * SAMPLE_RATE);
+            let totalLen = chunks.reduce((a, c) => a + c.length, 0);
+            if (totalLen > maxSamples) {
+                const flattened = new Float32Array(totalLen);
+                let o = 0;
+                for (const c of chunks) { flattened.set(c, o); o += c.length; }
+                chunks = [flattened.slice(totalLen - maxSamples)];
+                totalLen = maxSamples;
+                addLog(`✂️ セグメントを${MAX_SEGMENT_SEC}sに圧縮`);
+            }
+            const sec = totalLen / SAMPLE_RATE;
             if (isProcessing) {
+                if (transcribeQueue.length >= MAX_QUEUE_ITEMS) {
+                    const dropped = transcribeQueue.shift();
+                    if (dropped) {
+                        const dropSec = dropped.reduce((a, c) => a + c.length, 0) / SAMPLE_RATE;
+                        transcribeQueueSec = Math.max(0, transcribeQueueSec - dropSec);
+                        addLog(`🗑️ キュー上限(${MAX_QUEUE_ITEMS})で古いセグメントを破棄 (${dropSec.toFixed(1)}s)`);
+                    }
+                }
                 transcribeQueue.push(chunks);
                 transcribeQueueSec += sec;
                 addLog(`📥 キュー追加: 音声 ${sec.toFixed(1)}s (待機 ${transcribeQueue.length}件 / 合計${transcribeQueueSec.toFixed(1)}s)`);
@@ -887,7 +996,7 @@
 
         async function _runTranscribe(chunks) {
             const totalLen = chunks.reduce((a, c) => a + c.length, 0);
-            const audio = new Float32Array(totalLen);
+            let audio = new Float32Array(totalLen);
             let off = 0;
             for (const c of chunks) { audio.set(c, off); off += c.length; }
 
@@ -918,23 +1027,21 @@
             renderDisplay();
             stopRecTimer();
             startProcTimer(audioSec);
-            const isEnOnly = modelSelect.value.includes('.en');
-            const selectedLang = isEnOnly ? 'en' : (langSelect.value || null);
+            const selectedLang = langSelect.value || null;
             const modelName    = modelSelect.value.split('/').pop();
-            addLog(`⚙️ Whisper開始: 音声 ${audioSec.toFixed(2)}s  rms=${rmsIn.toFixed(4)}  model=${modelName}  lang=${selectedLang ?? 'auto'}`);
+            addLog(`⚙️ ASR開始: 音声 ${audioSec.toFixed(2)}s  rms=${rmsIn.toFixed(4)}  model=${modelName}  lang=${selectedLang ?? 'auto'}`);
 
             const t0 = Date.now();
             try {
                 // Timeout: abort if Whisper hangs for more than 60s
                 const timeoutMs = Math.max(60000, audioSec * 10000);
-                const transcribePromise = transcriber(normalizedAudio, {
-                    language: selectedLang,
-                    task: 'transcribe',
-                    chunk_length_s: 15,
-                    stride_length_s: 3,
-                });
+                const transcribeOptions = { task: 'transcribe' };
+                if (selectedLang) {
+                    transcribeOptions.language = selectedLang;
+                }
+                const transcribePromise = transcriber(normalizedAudio, transcribeOptions);
                 const timeoutPromise = new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error('Whisper timeout')), timeoutMs)
+                    setTimeout(() => reject(new Error('ASR timeout')), timeoutMs)
                 );
                 const res = await Promise.race([transcribePromise, timeoutPromise]);
                 const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
@@ -943,20 +1050,29 @@
                     results.push(text);
                     accumulatedText = results.join('\n');
                     void storageApi.saveLatestText(accumulatedText);
-                    addLog(`✅ Whisper完了: ${elapsed}s → "${text.slice(0, 60)}${text.length > 60 ? '…' : ''}"`);
+                    addLog(`✅ ASR完了: ${elapsed}s → "${text.slice(0, 60)}${text.length > 60 ? '…' : ''}"`);
                 } else {
-                    addLog(`⚠️ Whisper完了: ${elapsed}s → 空 (無音 or ノイズのみ?)`);
+                    addLog(`⚠️ ASR完了: ${elapsed}s → 空 (無音 or ノイズのみ?)`);
                 }
             } catch (err) {
                 const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
                 console.error(err);
                 results.push('⚠️ ' + err.message);
-                addLog(`❌ Whisperエラー: ${elapsed}s → ${err.message}`);
+                addLog(`❌ ASRエラー: ${elapsed}s → ${err.message}`);
+                if (/out of memory|memory access out of bounds|abort|wasm/i.test(String(err?.message || err || ''))) {
+                    addLog('🧹 メモリ逼迫を検出: パイプラインを再構築します');
+                    await hardMemoryCleanup();
+                    await loadModel();
+                }
+                await recoverFromRuntimeFailure(err);
             } finally {
                 // CRITICAL: always reset state even on error to prevent deadlock
                 isPending = false;
                 stopProcTimer();
                 renderDisplay();
+
+                audio = null;
+                normalizedAudio = null;
 
                 // Whisper blocks the main thread during inference, which can cause
                 // iOS to suspend the AudioContext.  Resume it immediately.
@@ -985,8 +1101,7 @@
 
         // ── VAD: called with one chunk of audio samples ───────────────────────
         function onAudioChunk(rawSamples) {
-            // Resample to 16kHz only for microphone input (audioCtx may run at 44100Hz on iOS).
-            // Radio fetch chunks are pre-downsampled to 16kHz in captureRadioStream, skip here.
+            // Resample to 16kHz when audioCtx runs at 44.1kHz on iOS.
             const ctxRate = (audioCtx && audioCtx.sampleRate) || SAMPLE_RATE;
             let samples = ctxRate !== SAMPLE_RATE
                 ? downsample(rawSamples, ctxRate)
@@ -1074,33 +1189,6 @@
             vadDebug.textContent =
                 `${stateLabel} ${bar} ${pct}%→onset  now:${level.toFixed(4)} onset:${onsetThresh.toFixed(4)}(×${effectiveOnsetMult.toFixed(1)}) floor:${noiseFloor.toFixed(4)} agc:${autoGain.toFixed(2)}x`;
 
-            // ── 連続録音モード (ラジオ): VAD閾値を無視してすべて録音し30秒ごとにフラッシュ ──
-            if (isRadioPlaying) {
-                if (!inSpeech) {
-                    inSpeech = true;
-                    onsetCount = 0;
-                    silenceCount = 0;
-                    speechBuf = [];
-                    startRecTimer();
-                    addLog(`🎙️ 連続録音開始 (${ctxRate}Hz→16kHz, 15s窓)`);
-                }
-                speechBuf.push(samples.slice());
-                updateStatusDisplay();
-                // Flush at 15s regardless of silence (use actual context rate)
-                const effectiveRate = ctxRate;
-                const maxChunks = Math.round(15 * effectiveRate / CHUNK_SIZE);
-                if (speechBuf.length >= maxChunks) {
-                    endSpeechSegment();
-                    if (isRadioPlaying) {
-                        inSpeech = true;
-                        silenceCount = 0;
-                        speechBuf = [];
-                        startRecTimer();
-                    }
-                }
-                return;
-            }
-
             // ── Onset detection with pre-roll ─────────────────────────────────
             // Use onsetThresh (higher) for onset to avoid false triggers from noise.
             // preRoll captures the beginning of speech even if onset fires slightly late.
@@ -1147,14 +1235,11 @@
 
             const rawSec = seg.reduce((a, c) => a + c.length, 0) / SAMPLE_RATE;
 
-            // Trim trailing silence so Whisper receives clean audio
-            // (skip in radio continuous mode — fixed 30s windows need no trim)
-            if (!isRadioPlaying) {
-                const { offsetMult: _trimOffsetMult } = computeAdaptiveMults(noiseFloor);
-                const trimThresh = Math.max(MANUAL_FLOOR * 0.6, noiseFloor * _trimOffsetMult);
-                while (seg.length > Math.max(MIN_SPEECH_CHUNKS, KEEP_TRAILING_CHUNKS) && rms(seg[seg.length - 1]) < trimThresh) {
-                    seg.pop();
-                }
+            // Trim trailing silence so Whisper receives cleaner audio.
+            const { offsetMult: _trimOffsetMult } = computeAdaptiveMults(noiseFloor);
+            const trimThresh = Math.max(MANUAL_FLOOR * 0.6, noiseFloor * _trimOffsetMult);
+            while (seg.length > Math.max(MIN_SPEECH_CHUNKS, KEEP_TRAILING_CHUNKS) && rms(seg[seg.length - 1]) < trimThresh) {
+                seg.pop();
             }
             const trimSec = seg.reduce((a, c) => a + c.length, 0) / SAMPLE_RATE;
 
@@ -1447,237 +1532,12 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
 
         renderDisplay();
 
-        // ── Radio stream test ─────────────────────────────────────────────────
-        const radioTestBtn       = document.getElementById('radioTestBtn');
-        const radioStreamSel     = document.getElementById('radioStreamSelect');
-        const radioStatus        = document.getElementById('radioStatus');
-        const radioCustomUrlWrap = document.getElementById('radioCustomUrlWrap');
-        const radioCustomUrl     = document.getElementById('radioCustomUrl');
-
-        radioStreamSel.addEventListener('change', () => {
-            radioCustomUrlWrap.style.display = radioStreamSel.value === 'custom' ? 'block' : 'none';
-        });
-
-        let radioAudio       = null;
-        let radioCtx         = null;
-        let radioAbortCtrl   = null;
-        let radioFeedTimer   = null;
-        let isRadioPlaying   = false;
-        let radioWorkletNode = null;
-        let radioScriptNode  = null;
-        let radioStopResolve = null;
-
-        function stopRadioTest() {
-            isRadioPlaying = false;
-            isListening = false;
-            flushBuffer();
-            stopRecTimer();
-
-            if (radioStopResolve)  { radioStopResolve(); radioStopResolve = null; }
-            if (radioWorkletNode)  { try { radioWorkletNode.disconnect(); } catch(_){} radioWorkletNode = null; }
-            if (radioScriptNode)   { try { radioScriptNode.disconnect(); }  catch(_){} radioScriptNode  = null; }
-            if (radioAbortCtrl)    { radioAbortCtrl.abort(); radioAbortCtrl = null; }
-            if (radioFeedTimer)    { clearTimeout(radioFeedTimer); radioFeedTimer = null; }
-            if (radioAudio)        { radioAudio.pause(); radioAudio.src = ''; radioAudio = null; }
-            if (radioCtx)          { radioCtx.close().catch(() => {}); radioCtx = null; }
-
-            inSpeech = false; silenceCount = 0; speechBuf = []; preRoll = [];
-            smoothedRms = 0;
-
-            radioTestBtn.textContent = '▶ 開始';
-            radioTestBtn.style.background = 'var(--card)';
-            radioTestBtn.style.color = 'var(--fg)';
-            recordBtn.disabled = false;
-            if (!isProcessing) setStatus('Ready — tap Start to listen', 'listening');
-        }
-
-        // Find first valid MPEG audio sync word (0xFF 0xEX with valid header bytes).
-        // Returns byte offset or -1 if not found.
-        function findMp3Sync(buf, start = 0) {
-            for (let i = start; i < buf.length - 3; i++) {
-                if (buf[i] === 0xFF && (buf[i+1] & 0xE0) === 0xE0) {
-                    const bitrateIdx = (buf[i+2] >> 4) & 0xF;
-                    const srateIdx   = (buf[i+2] >> 2) & 0x3;
-                    // 0xF = invalid bitrate, 0x3 = invalid sample rate
-                    if (bitrateIdx > 0 && bitrateIdx < 15 && srateIdx < 3) return i;
-                }
-            }
-            return -1;
-        }
-
-        // Fetch-based stream capture: decodes MP3 chunks with sync-word alignment.
-        async function captureRadioStream(url, ctx) {
-            const DECODE_BYTES  = 65536; // 64KB per decode attempt
-            const MAX_QUEUE     = 60;
-            const pcmQueue      = [];
-            let decodeOk        = 0;   // total successful decodes
-            let decodeFailCount = 0;
-            let syncLogDone     = false;
-
-            function feedLoop() {
-                if (!isRadioPlaying) return;
-                if (pcmQueue.length > 0) onAudioChunk(pcmQueue.shift());
-                radioFeedTimer = setTimeout(feedLoop, CHUNK_MS);
-            }
-            feedLoop();
-
-            radioAbortCtrl = new AbortController();
-            let resp;
-            try {
-                resp = await fetch(url, { signal: radioAbortCtrl.signal });
-            } catch (e) {
-                if (e.name === 'AbortError') return;
-                addLog(`❌ fetch失敗: ${e.message}`);
-                radioStatus.textContent = `接続失敗 (CORS?) — サーバーがAccess-Control-Allow-Origin:*を返す必要があります`;
-                return;
-            }
-            addLog(`📡 接続OK: HTTP ${resp.status}  ${resp.headers.get('content-type') || ''}  icy-metaint=${resp.headers.get('icy-metaint') || 'none'}`);
-
-            const reader = resp.body.getReader();
-            let rawBuf   = new Uint8Array(0);
-
-            try {
-                while (isRadioPlaying) {
-                    if (pcmQueue.length >= MAX_QUEUE) {
-                        await new Promise(r => setTimeout(r, CHUNK_MS * 8));
-                        continue;
-                    }
-
-                    const { done, value } = await reader.read();
-                    if (done) break;
-
-                    const tmp = new Uint8Array(rawBuf.length + value.length);
-                    tmp.set(rawBuf); tmp.set(value, rawBuf.length);
-                    rawBuf = tmp;
-
-                    // Log first 32 bytes as hex on first receive — reveals actual format
-                    if (!syncLogDone && rawBuf.length >= 32) {
-                        const hex = Array.from(rawBuf.slice(0, 32))
-                            .map(b => b.toString(16).padStart(2,'0')).join(' ');
-                        addLog(`🔬 ストリーム先頭bytes: ${hex}`);
-                        const syncPos = findMp3Sync(rawBuf, 0);
-                        addLog(`🔬 MP3 sync位置: ${syncPos >= 0 ? syncPos + 'B目' : '見つからず — MP3以外?'}`);
-                        syncLogDone = true;
-                        // Discard pre-sync garbage bytes once
-                        if (syncPos > 0) {
-                            rawBuf = rawBuf.slice(syncPos);
-                            addLog(`⚠️ sync前 ${syncPos}B を破棄`);
-                        }
-                    }
-
-                    if (rawBuf.length < DECODE_BYTES) continue;
-
-                    // Slice from sync word to ensure frame-aligned decode
-                    const syncPos = findMp3Sync(rawBuf, 0);
-                    if (syncPos < 0) {
-                        // No sync found in entire buffer — not raw MP3, discard
-                        addLog(`⚠️ sync見つからず — バッファ${rawBuf.length}B破棄`);
-                        rawBuf = new Uint8Array(0);
-                        continue;
-                    }
-                    if (syncPos > 0) rawBuf = rawBuf.slice(syncPos); // skip junk before sync
-                    if (rawBuf.length < DECODE_BYTES) continue;
-
-                    const slice = rawBuf.slice(0, DECODE_BYTES);
-                    rawBuf = rawBuf.slice(DECODE_BYTES);
-
-                    try {
-                        const decoded = await ctx.decodeAudioData(slice.buffer.slice(0));
-                        decodeOk++;
-                        decodeFailCount = 0;
-
-                        const ch0 = decoded.getChannelData(0);
-                        let mono = ch0;
-                        if (decoded.numberOfChannels > 1) {
-                            const ch1 = decoded.getChannelData(1);
-                            mono = new Float32Array(ch0.length);
-                            for (let i = 0; i < ch0.length; i++) mono[i] = (ch0[i] + ch1[i]) * 0.5;
-                        }
-                        const pcm16 = decoded.sampleRate !== SAMPLE_RATE
-                            ? downsample(mono, decoded.sampleRate) : mono;
-                        for (let i = 0; i + CHUNK_SIZE <= pcm16.length; i += CHUNK_SIZE)
-                            pcmQueue.push(pcm16.slice(i, i + CHUNK_SIZE));
-                        // Log every decode attempt result — tells us if subsequent decodes succeed
-                        if (decodeOk <= 5 || decodeOk % 10 === 0)
-                            addLog(`✅ デコード#${decodeOk}: ${decoded.sampleRate}Hz  ${decoded.duration.toFixed(2)}s  queue:${pcmQueue.length}`);
-                        radioStatus.textContent = `受信中: ${radioStreamSel.options[radioStreamSel.selectedIndex].text}`;
-                    } catch (e) {
-                        decodeFailCount++;
-                        if (decodeFailCount <= 5 || decodeFailCount % 20 === 0)
-                            addLog(`⚠️ デコード失敗 #${decodeOk + decodeFailCount} (${DECODE_BYTES}B@sync): ${e.message}`);
-                        // Rescue bytes after the second sync word to avoid ~9s audio gap
-                        const nextSync = findMp3Sync(slice, 4);
-                        if (nextSync > 0) {
-                            const rescued = slice.slice(nextSync);
-                            const newBuf = new Uint8Array(rescued.length + rawBuf.length);
-                            newBuf.set(rescued);
-                            newBuf.set(rawBuf, rescued.length);
-                            rawBuf = newBuf;
-                            if (decodeFailCount <= 5 || decodeFailCount % 20 === 0)
-                                addLog(`♻️ ${rescued.length}B救済 (sync@${nextSync})`);
-                        }
-                    }
-                }
-            } catch (e) {
-                if (e.name !== 'AbortError') addLog(`⚠️ ストリーム切断: ${e.message}`);
-            } finally {
-                reader.cancel().catch(() => {});
-                addLog(`📊 デコード統計: 成功${decodeOk}回  失敗${decodeFailCount}回`);
-            }
-        }
-
-        radioTestBtn.addEventListener('click', async () => {
-            if (isRadioPlaying) { stopRadioTest(); return; }
-            if (!transcriber)   { radioStatus.textContent = '⚠️ モデル未ロード'; return; }
-            if (isListening)    { radioStatus.textContent = '⚠️ マイク録音中は使用不可'; return; }
-
-            const streamUrl = radioStreamSel.value === 'custom'
-                ? radioCustomUrl.value.trim()
-                : radioStreamSel.value;
-            if (!streamUrl) { radioStatus.textContent = '⚠️ URLを入力してください'; return; }
-            radioStatus.textContent = '接続中…';
-            radioTestBtn.disabled = true;
-            addLog(`📻 ラジオ接続: ${streamUrl}`);
-
-            try {
-                radioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
-                await radioCtx.resume();
-
-                // Separate audio element for audible playback (no crossOrigin needed)
-                radioAudio = new Audio();
-                radioAudio.src = streamUrl;
-                radioAudio.volume = 0.6;
-                radioAudio.play().catch(() => {});
-
-                // Reset VAD state
-                inSpeech = false; silenceCount = 0; speechBuf = []; preRoll = [];
-                smoothedRms = 0; noiseFloor = MANUAL_FLOOR;
-                isListening = true;
-                isRadioPlaying = true;
-
-                CHUNK_MS = CHUNK_SIZE / SAMPLE_RATE * 1000; // 256ms (16kHz chunks from fetch decode)
-                addLog(`🔊 RadioCtx: ${radioCtx.sampleRate}Hz, CHUNK_MS=${CHUNK_MS.toFixed(1)}ms (fetch decode)`);
-
-                setStatus('ラジオ受信中… (連続録音)', 'listening');
-                radioTestBtn.textContent = '⏹ 停止';
-                radioTestBtn.style.background = 'var(--accent)';
-                radioTestBtn.style.color = '#fff';
-                radioStatus.textContent = '連続録音モード — 15秒ごとにWhisperへ送信';
-                recordBtn.disabled = true;
-
-                await captureRadioStream(streamUrl, radioCtx);
-
-            } catch (err) {
-                addLog(`❌ ラジオ接続失敗: ${err.message}`);
-                radioStatus.textContent = `エラー: ${err.message}`;
-                console.error(err);
-            } finally {
-                if (isRadioPlaying) stopRadioTest();
-                radioTestBtn.disabled = false;
-            }
-        });
-
         // ── Test mode (?test in URL) ──────────────────────────────────────────
+        window.addEventListener('beforeunload', () => {
+            void hardMemoryCleanup();
+            if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null; }
+        });
+
         if (new URLSearchParams(location.search).has('test')) {
             // Skip real model load; simulate the UI flow instead
             setStatus('Test mode — ready', 'listening');
