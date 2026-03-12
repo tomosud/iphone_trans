@@ -951,10 +951,37 @@
             let rmsIn = 0;
             for (let i = 0; i < audio.length; i++) rmsIn += audio[i] * audio[i];
             rmsIn = Math.sqrt(rmsIn / audio.length);
-            const normalizedAudio = audio;
+            let normalizedAudio = audio;
+            // ピークノーマライゼーション: 音声レベルを安定させWhisper認識精度を向上
+            let peakVal = 0;
+            for (let i = 0; i < audio.length; i++) {
+                const ax = Math.abs(audio[i]);
+                if (ax > peakVal) peakVal = ax;
+            }
+            if (peakVal > 0.01 && peakVal < 0.5) {
+                const gain = 0.9 / peakVal;
+                normalizedAudio = new Float32Array(audio.length);
+                for (let i = 0; i < audio.length; i++) {
+                    normalizedAudio[i] = audio[i] * gain;
+                }
+                addLog(`🔊 ピークノーマライズ: peak=${peakVal.toFixed(4)} → gain=${gain.toFixed(2)}x`);
+            }
             // CHANGE(A/G): compute + log clip stats before storing / inferring.
             const stats = getAudioStats(normalizedAudio);
             addLog(`🎧 clip stats: sec=${stats.sec.toFixed(2)} rms=${stats.rms.toFixed(4)} peak=${stats.peak.toFixed(4)}${stats.isTooQuiet ? ' ⚠️小さすぎる可能性' : ''}`);
+
+            // 音声が小さすぎる場合、自動ブーストを適用
+            if (stats.isTooQuiet && stats.peak > 0.001) { // 0.001: ほぼ無音は除外
+                const boost = 0.5 / stats.peak; // target peak 0.5 (Whisper入力の適切なレベル)
+                const boosted = new Float32Array(normalizedAudio.length);
+                for (let i = 0; i < normalizedAudio.length; i++) {
+                    const x = normalizedAudio[i] * boost;
+                    boosted[i] = (x >= -1 && x <= 1) ? x : Math.tanh(x);
+                }
+                normalizedAudio = boosted;
+                addLog(`🔊 自動ブースト: ${boost.toFixed(1)}x (isTooQuiet救済)`);
+            }
+
             storeAudioClip(normalizedAudio, audioSec);
 
             isPending = true;
@@ -1069,10 +1096,10 @@
             }
 
             // update pre-roll ring buffer
-            // Keep ORIGINAL (non-AGC) audio for Whisper.
-            // AGC is only for VAD decisions; feeding boosted audio can overdrive
-            // repeated segments and produce empty transcriptions.
-            preRoll.push(baseSamples.slice());
+            // AGC後の音声をWhisperに渡す。
+            // AGCブースト済み音声を使うことで、マイクからの微弱な入力でも
+            // Whisperが正しく認識できるようになる。
+            preRoll.push(samples.slice());
             if (preRoll.length > PRE_ROLL_CHUNKS) preRoll.shift();
 
             const level = rms(samples);
@@ -1139,7 +1166,7 @@
                     startRecTimer();
                     addLog(`🎙️ 連続録音開始 (${ctxRate}Hz→16kHz, 15s窓)`);
                 }
-                speechBuf.push(baseSamples.slice());
+                speechBuf.push(samples.slice());
                 updateStatusDisplay();
                 // Flush at 15s regardless of silence (use actual context rate)
                 const effectiveRate = ctxRate;
@@ -1170,7 +1197,7 @@
                 addLog(`🎙️ 録音開始: level=${level.toFixed(4)} floor=${noiseFloor.toFixed(4)} agc=${autoGain.toFixed(2)}x`);
             }
             {
-                speechBuf.push(baseSamples.slice());
+                speechBuf.push(samples.slice());
 
                 // Auto-flush before hitting Whisper's 30s context limit
                 if (speechBuf.length >= MAX_SPEECH_CHUNKS) {
