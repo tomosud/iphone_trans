@@ -1036,12 +1036,12 @@
         }
 
         // ── VAD: called with one chunk of audio samples ───────────────────────
-        function onAudioChunk(rawSamples) {
+        function onAudioChunk(rawSamples, sourceSampleRate = null) {
             // Resample to 16kHz only for microphone input (audioCtx may run at 44100Hz on iOS).
             // Radio fetch chunks are pre-downsampled to 16kHz in captureRadioStream, skip here.
-            const ctxRate = (audioCtx && audioCtx.sampleRate) || SAMPLE_RATE;
-            const baseSamples = ctxRate !== SAMPLE_RATE
-                ? downsample(rawSamples, ctxRate)
+            const inputRate = sourceSampleRate || ((audioCtx && audioCtx.sampleRate) || SAMPLE_RATE);
+            const baseSamples = inputRate !== SAMPLE_RATE
+                ? downsample(rawSamples, inputRate)
                 : rawSamples;
             let samples = baseSamples;
             // Auto gain: lift quiet speech automatically, keep stable with smoothing.
@@ -1461,7 +1461,7 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                 decCtx.close();
 
                 const ch0 = decoded.getChannelData(0);
-                addLog(`✅ 読み込み完了: ${(ch0.length / SAMPLE_RATE).toFixed(1)}s — VADパイプラインへ投入`);
+                addLog(`✅ 読み込み完了: ${(ch0.length / decoded.sampleRate).toFixed(1)}s @${decoded.sampleRate}Hz — VADパイプラインへ投入`);
 
                 // Reset VAD for a clean simulation run
                 noiseFloor = MANUAL_FLOOR;
@@ -1473,7 +1473,7 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
                 const totalChunks = Math.ceil(ch0.length / CHUNK_SIZE);
                 for (let i = 0; i < totalChunks; i++) {
                     const chunk = ch0.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-                    onAudioChunk(chunk);
+                    onAudioChunk(chunk, decoded.sampleRate);
                     if (i % 8 === 7) await new Promise(r => setTimeout(r, 0));
                 }
                 if (inSpeech) endSpeechSegment();
