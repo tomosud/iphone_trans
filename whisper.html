@@ -745,8 +745,27 @@
             return { sec, rms: rmsVal, peak, isTooQuiet: rmsVal < 0.005 || peak < 0.03 };
         }
 
-        // CHANGE(C/D): Initialize a single Worker and route progress/result events.
-        function ensureWhisperWorker() {
+        function rejectPendingWorkerRequests(errorMessage) {
+            for (const pending of workerPending.values()) {
+                pending.reject(new Error(errorMessage));
+            }
+            workerPending.clear();
+        }
+
+        function resetWhisperWorker(errorMessage = 'Whisper worker reset') {
+            if (!whisperWorker) return;
+            whisperWorker.onmessage = null;
+            whisperWorker.onerror = null;
+            whisperWorker.terminate();
+            whisperWorker = null;
+            rejectPendingWorkerRequests(errorMessage);
+        }
+
+        // CHANGE(C/D): Whisper Worker is recreated for each inference request.
+        function ensureWhisperWorker({ forceNew = false } = {}) {
+            if (forceNew) {
+                resetWhisperWorker('Whisper worker recreated for next segment');
+            }
             if (whisperWorker) return whisperWorker;
             whisperWorker = new Worker('./whisper-worker.js', { type: 'module' });
             whisperWorker.onmessage = (ev) => {
@@ -781,6 +800,7 @@
             };
             whisperWorker.onerror = (e) => {
                 addLog(`❌ Workerエラー: ${e.message}`);
+                resetWhisperWorker('Whisper worker crashed');
             };
             return whisperWorker;
         }
@@ -970,7 +990,7 @@
                 // Timeout: abort if Whisper hangs for more than 60s
                 const timeoutMs = Math.max(60000, audioSec * 10000);
                 const reqId = ++workerReqId;
-                const w = ensureWhisperWorker();
+                const w = ensureWhisperWorker({ forceNew: true });
                 const transcribePromise = new Promise((resolve, reject) => {
                     workerPending.set(reqId, { resolve, reject });
                     // CHANGE(D): transfer Float32Array to Worker; receive only text/error.
