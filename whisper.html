@@ -262,10 +262,6 @@
 
     <script src="storage.js"></script>
     <script type="module">
-        import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
-
-        env.allowLocalModels = false;
-        env.useBrowserCache  = true;
 
         const storageApi = window.TransStorage;
 
@@ -534,7 +530,8 @@
             // In-memory clips (current session)
             const memClips = [...recentAudioClips].reverse().map((c, i) => ({
                 label: `#${recentAudioClips.length - i}  ${c.t}  ${c.sec.toFixed(2)}s  [mem]`,
-                playFn: btn => playAudioClip(c.audio, btn),
+                // CHANGE(B): [mem] clips now use WAV Blob + <audio> for iOS/Safari stability.
+                playFn: btn => playFloatClipAsWav(c.audio, btn),
             }));
 
             // IndexedDB clips (persisted across sessions)
@@ -576,22 +573,15 @@
             a.play().catch(e => { btn.disabled = false; btn.textContent = '▶ 再生'; addLog(`❌ WAV再生: ${e.message}`); });
         }
 
-        async function playAudioClip(audioData, btn) {
-            btn.disabled = true;
-            btn.textContent = '▶ 再生中…';
+        // CHANGE(B): Float32 PCM replay via WAV Blob + <audio> (instead of AudioContext direct playback).
+        function playFloatClipAsWav(audioData, btn) {
             try {
-                const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
-                const buf = ctx.createBuffer(1, audioData.length, SAMPLE_RATE);
-                buf.copyToChannel(audioData, 0);
-                const src = ctx.createBufferSource();
-                src.buffer = buf;
-                src.connect(ctx.destination);
-                src.start();
-                src.onended = () => { ctx.close(); btn.disabled = false; btn.textContent = '▶ 再生'; };
+                const wavBytes = pcmToWav(audioData, SAMPLE_RATE);
+                playWavClip(wavBytes, btn);
             } catch (e) {
                 btn.disabled = false;
                 btn.textContent = '▶ 再生';
-                addLog(`❌ 再生エラー: ${e.message}`);
+                addLog(`❌ [mem] WAV化失敗: ${e.message}`);
             }
         }
 
@@ -663,7 +653,11 @@
         let transcribeQueue = [];    // pending segments (FIFO)
         let transcribeQueueSec = 0;  // total audio duration queued
         let accumulatedText = '';
-        let transcriber     = null;
+        // CHANGE(C/D): Whisper is now executed in a dedicated Worker.
+        let whisperWorker   = null;
+        let workerReady     = false;
+        let workerReqId     = 0;
+        const workerPending = new Map();
         let audioCtx        = null;
         let mediaStream     = null;
         let mediaSourceNode = null;
@@ -734,6 +728,61 @@
             let sum = 0;
             for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
             return Math.sqrt(sum / buf.length);
+        }
+
+        // CHANGE(A/G): clip-level diagnostics for "is there actual audio?" checks.
+        function getAudioStats(audio) {
+            let sum = 0;
+            let peak = 0;
+            for (let i = 0; i < audio.length; i++) {
+                const x = audio[i];
+                sum += x * x;
+                const ax = Math.abs(x);
+                if (ax > peak) peak = ax;
+            }
+            const rmsVal = audio.length ? Math.sqrt(sum / audio.length) : 0;
+            const sec = audio.length / SAMPLE_RATE;
+            return { sec, rms: rmsVal, peak, isTooQuiet: rmsVal < 0.005 || peak < 0.03 };
+        }
+
+        // CHANGE(C/D): Initialize a single Worker and route progress/result events.
+        function ensureWhisperWorker() {
+            if (whisperWorker) return whisperWorker;
+            whisperWorker = new Worker('./whisper-worker.js', { type: 'module' });
+            whisperWorker.onmessage = (ev) => {
+                const msg = ev.data || {};
+                if (msg.type === 'progress') {
+                    const p = msg.progress || {};
+                    if (p.status === 'progress') {
+                        const pct = Math.round((p.loaded / p.total) * 100);
+                        progressFill.style.width = `${pct}%`;
+                        setStatus(`Downloading… ${pct}%`, 'loading');
+                    } else if (p.status === 'done') {
+                        progressFill.style.width = '100%';
+                    }
+                    return;
+                }
+                if (msg.type === 'ready') {
+                    workerReady = true;
+                    progressFill.style.width = '100%';
+                    setStatus('Ready — tap Start to listen', 'listening');
+                    recordBtn.disabled = false;
+                    document.getElementById('sampleLongBtn').disabled = false;
+                    setTimeout(() => progressBar.classList.remove('visible'), 800);
+                    return;
+                }
+                if (msg.type === 'result' || msg.type === 'error') {
+                    const pending = workerPending.get(msg.id);
+                    if (!pending) return;
+                    workerPending.delete(msg.id);
+                    if (msg.type === 'result') pending.resolve(msg);
+                    else pending.reject(new Error(msg.error || 'Worker error'));
+                }
+            };
+            whisperWorker.onerror = (e) => {
+                addLog(`❌ Workerエラー: ${e.message}`);
+            };
+            return whisperWorker;
         }
 
         const SUB_MESSAGES = {
@@ -846,24 +895,13 @@
             progressBar.classList.add('visible');
             progressFill.style.width = '0%';
             recordBtn.disabled = true;
+            document.getElementById('sampleLongBtn').disabled = true;
             modelSelect.disabled = true;
+            workerReady = false;
 
             try {
-                transcriber = await pipeline('automatic-speech-recognition', modelName, {
-                    progress_callback: (p) => {
-                        if (p.status === 'progress') {
-                            const pct = Math.round((p.loaded / p.total) * 100);
-                            progressFill.style.width = `${pct}%`;
-                            setStatus(`Downloading… ${pct}%`, 'loading');
-                        } else if (p.status === 'done') {
-                            progressFill.style.width = '100%';
-                        }
-                    }
-                });
-                setStatus('Ready — tap Start to listen', 'listening');
-                recordBtn.disabled = false;
-                document.getElementById('sampleLongBtn').disabled = false;
-                setTimeout(() => progressBar.classList.remove('visible'), 800);
+                const w = ensureWhisperWorker();
+                w.postMessage({ type: 'load', modelName });
             } catch (err) {
                 console.error(err);
                 setStatus('Model load failed: ' + err.message, '');
@@ -874,7 +912,7 @@
         // ── Transcribe a collected speech segment ─────────────────────────────
         // If already processing, queue the segment and process all segments in order.
         function transcribeSegment(chunks) {
-            if (!transcriber || chunks.length < MIN_SPEECH_CHUNKS) return;
+            if (!workerReady || chunks.length < MIN_SPEECH_CHUNKS) return;
             const sec = chunks.reduce((a, c) => a + c.length, 0) / SAMPLE_RATE;
             if (isProcessing) {
                 transcribeQueue.push(chunks);
@@ -913,6 +951,9 @@
                     }
                 }
             }
+            // CHANGE(A/G): compute + log clip stats before storing / inferring.
+            const stats = getAudioStats(normalizedAudio);
+            addLog(`🎧 clip stats: sec=${stats.sec.toFixed(2)} rms=${stats.rms.toFixed(4)} peak=${stats.peak.toFixed(4)}${stats.isTooQuiet ? ' ⚠️小さすぎる可能性' : ''}`);
             storeAudioClip(normalizedAudio, audioSec);
 
             isPending = true;
@@ -928,11 +969,23 @@
             try {
                 // Timeout: abort if Whisper hangs for more than 60s
                 const timeoutMs = Math.max(60000, audioSec * 10000);
-                const transcribePromise = transcriber(normalizedAudio, {
-                    language: selectedLang,
-                    task: 'transcribe',
-                    chunk_length_s: 15,
-                    stride_length_s: 3,
+                const reqId = ++workerReqId;
+                const w = ensureWhisperWorker();
+                const transcribePromise = new Promise((resolve, reject) => {
+                    workerPending.set(reqId, { resolve, reject });
+                    // CHANGE(D): transfer Float32Array to Worker; receive only text/error.
+                    w.postMessage({
+                        type: 'transcribe',
+                        id: reqId,
+                        modelName: modelSelect.value,
+                        audio: normalizedAudio,
+                        options: {
+                            language: selectedLang,
+                            task: 'transcribe',
+                            chunk_length_s: 15,
+                            stride_length_s: 3,
+                        },
+                    }, [normalizedAudio.buffer]);
                 });
                 const timeoutPromise = new Promise((_, reject) =>
                     setTimeout(() => reject(new Error('Whisper timeout')), timeoutMs)
@@ -959,8 +1012,7 @@
                 stopProcTimer();
                 renderDisplay();
 
-                // Whisper blocks the main thread during inference, which can cause
-                // iOS to suspend the AudioContext.  Resume it immediately.
+                // Main thread no longer runs Whisper directly, but keep defensive resume.
                 if (audioCtx && audioCtx.state === 'suspended' && isListening) {
                     addLog('⚠️ AudioContext suspended → resuming');
                     audioCtx.resume().catch(() => {});
@@ -1395,7 +1447,7 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
         // Lets you verify silence-based segmentation without a real microphone.
         const sampleLongBtn = document.getElementById('sampleLongBtn');
         sampleLongBtn.addEventListener('click', async () => {
-            if (!transcriber) { addLog('⚠️ モデル未ロード'); return; }
+            if (!workerReady) { addLog('⚠️ モデル未ロード'); return; }
             if (isListening)  { addLog('⚠️ 録音中は使用不可 — 先に停止してください'); return; }
             sampleLongBtn.disabled = true;
             sampleLongBtn.textContent = '⏳ テスト中…';
@@ -1634,7 +1686,7 @@ registerProcessor('chunk-processor', ChunkProcessor);`;
 
         radioTestBtn.addEventListener('click', async () => {
             if (isRadioPlaying) { stopRadioTest(); return; }
-            if (!transcriber)   { radioStatus.textContent = '⚠️ モデル未ロード'; return; }
+            if (!workerReady)   { radioStatus.textContent = '⚠️ モデル未ロード'; return; }
             if (isListening)    { radioStatus.textContent = '⚠️ マイク録音中は使用不可'; return; }
 
             const streamUrl = radioStreamSel.value === 'custom'
