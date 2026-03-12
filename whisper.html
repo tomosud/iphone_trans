@@ -761,11 +761,7 @@
             rejectPendingWorkerRequests(errorMessage);
         }
 
-        // CHANGE(C/D): Whisper Worker is recreated for each inference request.
-        function ensureWhisperWorker({ forceNew = false } = {}) {
-            if (forceNew) {
-                resetWhisperWorker('Whisper worker recreated for next segment');
-            }
+        function ensureWhisperWorker() {
             if (whisperWorker) return whisperWorker;
             whisperWorker = new Worker('./whisper-worker.js', { type: 'module' });
             whisperWorker.onmessage = (ev) => {
@@ -952,25 +948,10 @@
 
             const audioSec = totalLen / SAMPLE_RATE;
 
-            // RMS-normalize: always normalize to a consistent level for Whisper.
-            // AGC can over-amplify (RMS 0.2-0.4 is too loud → empty results).
-            // Normalize both UP (quiet audio) and DOWN (over-amplified audio).
             let rmsIn = 0;
             for (let i = 0; i < audio.length; i++) rmsIn += audio[i] * audio[i];
             rmsIn = Math.sqrt(rmsIn / audio.length);
-            let normalizedAudio = audio;
-            if (rmsIn > 0.001) {
-                const targetRms = 0.08;
-                const scale = Math.min(Math.max(targetRms / rmsIn, 0.1), 3.0);
-                if (scale < 0.9 || scale > 1.1) { // skip if already near target
-                    normalizedAudio = new Float32Array(audio.length);
-                    for (let i = 0; i < audio.length; i++) {
-                        // Soft limiting with tanh to preserve waveform shape
-                        const x = audio[i] * scale;
-                        normalizedAudio[i] = (x >= -1 && x <= 1) ? x : Math.tanh(x);
-                    }
-                }
-            }
+            const normalizedAudio = audio;
             // CHANGE(A/G): compute + log clip stats before storing / inferring.
             const stats = getAudioStats(normalizedAudio);
             addLog(`🎧 clip stats: sec=${stats.sec.toFixed(2)} rms=${stats.rms.toFixed(4)} peak=${stats.peak.toFixed(4)}${stats.isTooQuiet ? ' ⚠️小さすぎる可能性' : ''}`);
@@ -990,7 +971,7 @@
                 // Timeout: abort if Whisper hangs for more than 60s
                 const timeoutMs = Math.max(60000, audioSec * 10000);
                 const reqId = ++workerReqId;
-                const w = ensureWhisperWorker({ forceNew: true });
+                const w = ensureWhisperWorker();
                 const transcribePromise = new Promise((resolve, reject) => {
                     workerPending.set(reqId, { resolve, reject });
                     // CHANGE(D): transfer Float32Array to Worker; receive only text/error.
@@ -1002,8 +983,6 @@
                         options: {
                             language: selectedLang,
                             task: 'transcribe',
-                            chunk_length_s: 15,
-                            stride_length_s: 3,
                         },
                     }, [normalizedAudio.buffer]);
                 });
@@ -1019,7 +998,7 @@
                     void storageApi.saveLatestText(accumulatedText);
                     addLog(`✅ Whisper完了: ${elapsed}s → "${text.slice(0, 60)}${text.length > 60 ? '…' : ''}"`);
                 } else {
-                    addLog(`⚠️ Whisper完了: ${elapsed}s → 空 (無音 or ノイズのみ?)`);
+                    addLog(`⚠️ Whisper完了: ${elapsed}s → 空文字結果`);
                 }
             } catch (err) {
                 const elapsed = ((Date.now() - t0) / 1000).toFixed(2);

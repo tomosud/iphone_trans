@@ -3,32 +3,28 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
 env.allowLocalModels = false;
 env.useBrowserCache = true;
 
-// Always recreate ASR pipeline for every incoming clip.
-// This intentionally disables transcriber reuse to avoid stale worker/model state.
 let activeTranscriber = null;
+let activeModelName = null;
 
-async function disposeActiveTranscriber() {
-  if (!activeTranscriber) return;
-  const transcriber = activeTranscriber;
-  activeTranscriber = null;
-  if (typeof transcriber.dispose === 'function') {
+async function getTranscriber(modelName, { forceReload = false } = {}) {
+  const shouldReload = forceReload || !activeTranscriber || activeModelName !== modelName;
+  if (!shouldReload) return activeTranscriber;
+
+  if (activeTranscriber && typeof activeTranscriber.dispose === 'function') {
     try {
-      await transcriber.dispose();
+      await activeTranscriber.dispose();
     } catch {
-      // Ignore dispose failures and continue with a fresh pipeline.
+      // Continue with a fresh pipeline.
     }
   }
-}
 
-async function createFreshTranscriber(modelName) {
-  await disposeActiveTranscriber();
-  const transcriber = await pipeline('automatic-speech-recognition', modelName, {
+  activeTranscriber = await pipeline('automatic-speech-recognition', modelName, {
     progress_callback: (progress) => {
       self.postMessage({ type: 'progress', progress });
     },
   });
-  activeTranscriber = transcriber;
-  return transcriber;
+  activeModelName = modelName;
+  return activeTranscriber;
 }
 
 self.onmessage = async (ev) => {
@@ -36,8 +32,7 @@ self.onmessage = async (ev) => {
 
   if (msg.type === 'load') {
     try {
-      // Preload once for UX, but transcribe requests still rebuild every time.
-      await createFreshTranscriber(msg.modelName);
+      await getTranscriber(msg.modelName, { forceReload: true });
       self.postMessage({ type: 'ready', modelName: msg.modelName });
     } catch (e) {
       self.postMessage({ type: 'error', id: msg.id ?? null, error: e?.message || String(e) });
@@ -51,7 +46,7 @@ self.onmessage = async (ev) => {
       const modelName = msg.modelName;
       const audio = msg.audio;
       const options = msg.options || {};
-      const asr = await createFreshTranscriber(modelName);
+      const asr = await getTranscriber(modelName);
       const res = await asr(audio, options);
       self.postMessage({ type: 'result', id, text: res?.text || '' });
     } catch (e) {
