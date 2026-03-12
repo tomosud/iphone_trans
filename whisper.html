@@ -974,7 +974,6 @@
                 const w = ensureWhisperWorker();
                 const transcribePromise = new Promise((resolve, reject) => {
                     workerPending.set(reqId, { resolve, reject });
-                    // CHANGE(D): transfer Float32Array to Worker; receive only text/error.
                     w.postMessage({
                         type: 'transcribe',
                         id: reqId,
@@ -984,7 +983,7 @@
                             language: selectedLang,
                             task: 'transcribe',
                         },
-                    }, [normalizedAudio.buffer]);
+                    });
                 });
                 const timeoutPromise = new Promise((_, reject) =>
                     setTimeout(() => reject(new Error('Whisper timeout')), timeoutMs)

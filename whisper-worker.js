@@ -44,7 +44,13 @@ self.onmessage = async (ev) => {
     const id = msg.id;
     try {
       const modelName = msg.modelName;
-      const audio = msg.audio;
+      // Explicitly copy into a new Float32Array to handle transferred buffers
+      // that may arrive detached or in a non-contiguous state in some browsers.
+      const audio = new Float32Array(msg.audio);
+      if (audio.length === 0) {
+        self.postMessage({ type: 'result', id, text: '' });
+        return;
+      }
       const options = msg.options || {};
       const asr = await getTranscriber(modelName);
       const res = await asr(audio, options);
