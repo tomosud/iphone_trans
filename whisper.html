@@ -989,9 +989,10 @@
             // Resample to 16kHz only for microphone input (audioCtx may run at 44100Hz on iOS).
             // Radio fetch chunks are pre-downsampled to 16kHz in captureRadioStream, skip here.
             const ctxRate = (audioCtx && audioCtx.sampleRate) || SAMPLE_RATE;
-            let samples = ctxRate !== SAMPLE_RATE
+            const baseSamples = ctxRate !== SAMPLE_RATE
                 ? downsample(rawSamples, ctxRate)
                 : rawSamples;
+            let samples = baseSamples;
             // Auto gain: lift quiet speech automatically, keep stable with smoothing.
             // Only update gain when NOT speaking to prevent gain drift during speech,
             // which would destabilise the audio fed to Whisper.
@@ -1018,7 +1019,10 @@
             }
 
             // update pre-roll ring buffer
-            preRoll.push(samples.slice());
+            // Keep ORIGINAL (non-AGC) audio for Whisper.
+            // AGC is only for VAD decisions; feeding boosted audio can overdrive
+            // repeated segments and produce empty transcriptions.
+            preRoll.push(baseSamples.slice());
             if (preRoll.length > PRE_ROLL_CHUNKS) preRoll.shift();
 
             const level = rms(samples);
@@ -1085,7 +1089,7 @@
                     startRecTimer();
                     addLog(`🎙️ 連続録音開始 (${ctxRate}Hz→16kHz, 15s窓)`);
                 }
-                speechBuf.push(samples.slice());
+                speechBuf.push(baseSamples.slice());
                 updateStatusDisplay();
                 // Flush at 15s regardless of silence (use actual context rate)
                 const effectiveRate = ctxRate;
@@ -1116,7 +1120,7 @@
                 addLog(`🎙️ 録音開始: level=${level.toFixed(4)} floor=${noiseFloor.toFixed(4)} agc=${autoGain.toFixed(2)}x`);
             }
             {
-                speechBuf.push(samples.slice());
+                speechBuf.push(baseSamples.slice());
 
                 // Auto-flush before hitting Whisper's 30s context limit
                 if (speechBuf.length >= MAX_SPEECH_CHUNKS) {
