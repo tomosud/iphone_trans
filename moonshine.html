@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="description" content="Simple microphone transcription with MoonshineJS.">
+  <title>Moonshine ASR</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    .moonshine-status {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 14px;
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+
+    .moonshine-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--muted);
+      flex: 0 0 auto;
+    }
+
+    .moonshine-dot.loading {
+      background: #f59e0b;
+    }
+
+    .moonshine-dot.listening {
+      background: #10b981;
+    }
+
+    .moonshine-dot.processing {
+      background: #3b82f6;
+    }
+
+    .moonshine-dot.error {
+      background: #ef4444;
+    }
+
+    .moonshine-controls {
+      display: flex;
+      gap: 8px;
+    }
+
+    .moonshine-button {
+      flex: 1 1 auto;
+      min-height: 48px;
+      border: 0;
+      border-radius: 16px;
+      background: #10b981;
+      color: #ffffff;
+      font: inherit;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .moonshine-button.stop {
+      background: #ef4444;
+    }
+
+    .moonshine-button.secondary {
+      flex: 0 0 auto;
+      padding: 0 16px;
+      background: rgba(20, 22, 25, 0.98);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      color: var(--ink);
+    }
+
+    .moonshine-button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
+    .moonshine-note {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.9rem;
+      line-height: 1.6;
+    }
+  </style>
+</head>
+<body>
+  <main class="app-shell">
+    <section class="moonshine-status" aria-live="polite">
+      <div id="statusDot" class="moonshine-dot"></div>
+      <div id="statusText">Press Start to transcribe with Moonshine.</div>
+    </section>
+
+    <section class="input-panel">
+      <div class="moonshine-controls">
+        <button id="recordButton" class="moonshine-button" type="button">Start</button>
+        <button id="clearButton" class="moonshine-button secondary" type="button">Clear</button>
+      </div>
+      <p class="moonshine-note" style="margin-top:10px;">
+        English only for now. Transcript stays on this page only.
+      </p>
+    </section>
+
+    <section class="display-panel">
+      <div class="display-box">
+        <div id="finalText" class="final-text">Transcript will appear here.</div>
+      </div>
+    </section>
+
+    <section class="nav-panel" translate="no">
+      <a class="nav-link-button" href="index.html">Home</a>
+    </section>
+  </main>
+
+  <script type="module">
+    import * as Moonshine from "https://cdn.jsdelivr.net/npm/@moonshine-ai/moonshine-js@latest/dist/moonshine.min.js";
+
+    const recordButton = document.getElementById("recordButton");
+    const clearButton = document.getElementById("clearButton");
+    const finalText = document.getElementById("finalText");
+    const statusText = document.getElementById("statusText");
+    const statusDot = document.getElementById("statusDot");
+
+    const placeholderText = "Transcript will appear here.";
+    const committedLines = [];
+
+    let transcriber = null;
+    let isListening = false;
+
+    function setStatus(text, state = "") {
+      statusText.textContent = text;
+      statusDot.className = `moonshine-dot${state ? ` ${state}` : ""}`;
+    }
+
+    function renderTranscript() {
+      finalText.textContent = committedLines.length > 0
+        ? committedLines.join("\n\n")
+        : placeholderText;
+    }
+
+    function updateViewportMetrics() {
+      const viewportHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+      const nextAppHeight = Math.max(320, Math.round(viewportHeight));
+      const nextDisplayHeight = Math.max(260, Math.min(520, Math.round(viewportHeight * 0.72)));
+
+      document.documentElement.style.setProperty("--app-height", `${nextAppHeight}px`);
+      document.documentElement.style.setProperty("--display-height", `${nextDisplayHeight}px`);
+    }
+
+    function ensureTranscriber() {
+      if (transcriber) {
+        return transcriber;
+      }
+
+      transcriber = new Moonshine.MicrophoneTranscriber(
+        "model/tiny",
+        {
+          onPermissionsRequested() {
+            setStatus("Requesting microphone permission...", "loading");
+          },
+          onModelLoadStarted() {
+            setStatus("Loading Moonshine model...", "loading");
+          },
+          onModelLoaded() {
+            setStatus(isListening ? "Listening..." : "Model loaded. Press Start.", isListening ? "listening" : "");
+          },
+          onTranscribeStarted() {
+            isListening = true;
+            recordButton.textContent = "Stop";
+            recordButton.classList.add("stop");
+            setStatus("Listening...", "listening");
+          },
+          onSpeechStart() {
+            setStatus("Speech detected...", "listening");
+          },
+          onSpeechEnd() {
+            setStatus("Processing speech...", "processing");
+          },
+          onTranscriptionCommitted(text) {
+            const normalized = (text || "").trim();
+
+            if (!normalized) {
+              setStatus("Listening...", "listening");
+              return;
+            }
+
+            committedLines.push(normalized);
+            renderTranscript();
+            finalText.scrollTop = finalText.scrollHeight;
+            setStatus("Listening...", "listening");
+          },
+          onTranscribeStopped() {
+            isListening = false;
+            recordButton.textContent = "Start";
+            recordButton.classList.remove("stop");
+            setStatus("Stopped.");
+          },
+          onError(error) {
+            const message = error?.message || String(error);
+            isListening = false;
+            recordButton.textContent = "Start";
+            recordButton.classList.remove("stop");
+            setStatus(`Error: ${message}`, "error");
+            console.error(error);
+          },
+        }
+      );
+
+      return transcriber;
+    }
+
+    async function toggleRecording() {
+      const instance = ensureTranscriber();
+      recordButton.disabled = true;
+
+      try {
+        if (isListening) {
+          instance.stop();
+        } else {
+          await instance.start();
+        }
+      } catch (error) {
+        const message = error?.message || String(error);
+        isListening = false;
+        recordButton.textContent = "Start";
+        recordButton.classList.remove("stop");
+        setStatus(`Error: ${message}`, "error");
+        console.error(error);
+      } finally {
+        recordButton.disabled = false;
+      }
+    }
+
+    function clearTranscript() {
+      committedLines.length = 0;
+      renderTranscript();
+      if (!isListening) {
+        setStatus("Press Start to transcribe with Moonshine.");
+      }
+    }
+
+    recordButton.addEventListener("click", () => {
+      void toggleRecording();
+    });
+    clearButton.addEventListener("click", clearTranscript);
+
+    window.addEventListener("resize", updateViewportMetrics);
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", updateViewportMetrics);
+    }
+
+    updateViewportMetrics();
+    renderTranscript();
+  </script>
+</body>
+</html>
