@@ -102,3 +102,29 @@ Moonshine は Useful Sensors（moonshine-ai）の英語向け軽量音声認識�
 4. **キーの保存**: パスワードマネージャー方式＋スマホ専用キー＋ワークスペースの利用上限。
 5. **品質**: Haiku → Sonnet の差し替え、名前表、原文の補正を足す。
 6. **余力があれば**: 端末内の音声認識（Moonshine/Whisper）を (C) として、版を固定して再挑戦。
+
+## 6. 調査タスク：音声認識の選択肢を最新の情報で調べ直す
+
+2026年春（3月）に試した Moonshine は、iPhone の Safari で動かなかった（2.3 参照）。半年以上たっているので、現時点（2026年11月）の最新の情報で次を調べ直す。結果は `docs/asr-research.md` にまとめ、この文書の「3. 再挑戦の方針」と「5. 最初にやること」を必要に応じて更新する。
+
+### 6.1 Moonshine は今の Safari で動くか
+
+- Moonshine（moonshine-ai / Useful Sensors）の最新版（モデルの新版、`@moonshine-ai/moonshine-js`、transformers.js 対応、ストリーミング版など）の状況と、iPhone の Safari（iOS 26 世代）での動作報告・既知の問題（issue）。
+- 前回の失敗の見立て（2.3）が当たっているか: iPhone の WASM メモリ制限、SharedArrayBuffer と COOP/COEP（GitHub Pages ではヘッダーを付けられない。`coi-serviceworker` で回避できるか）、版の固定、API の使い方。
+- Safari の WebGPU（Safari 26 で既定有効と言われている）で、ONNX Runtime Web / transformers.js の音声認識が動くか、速さはどうか。
+- 動く見込みがあるなら、版を固定した最小のページで PC の Chrome → iPhone の Safari の順に確かめる手順。
+
+### 6.2 ほかの選択肢
+
+それぞれ「iPhone の Safari（と、ホーム画面に追加した PWA）で動くか」「話し終わりから文字が出るまでの遅延」「精度（英語、できれば多言語）」「料金」「GitHub Pages だけで動くか（サーバーが要るか）」「API キーをブラウザに置く必要があるか」で比べる。
+
+- **ブラウザ標準**: Web Speech API（`webkitSpeechRecognition`）の iOS での現状（連続認識、途中結果、PWA での可否、言語）。
+- **端末内（ブラウザ）**: transformers.js の Whisper（WebGPU / WASM）、whisper.cpp の WASM 版、sherpa-onnx の WASM 版、Vosk のブラウザ版、そのほか最近の軽量モデル。
+- **クラウドのストリーミング認識**: ブラウザから直接つなげるもの（WebSocket など）。例: OpenAI の Realtime / 文字起こし API、Deepgram、AssemblyAI、Google Cloud Speech、Azure Speech、Gladia、Speechmatics。ブラウザに置く一時的なトークンを発行できるか（長期の API キーをページに置かずに済むか）。
+- **Claude 側**: Claude API が音声入力に対応しているか（2026年11月時点。対応していれば認識と翻訳を1回で済ませられる）。
+
+### 6.3 まとめ方
+
+- 表で比較し、「まず試すべき1つ」と「その次の候補」をおすすめとして書く。
+- 出典（公式ドキュメント、リリースノート、issue）へのリンクを付け、確認できなかったことは「未確認」と書く。
+- 可能なら、おすすめの方式を最小のページで実際に動かし、PC で確かめた結果も書く（iPhone での確認はユーザーに依頼する）。
