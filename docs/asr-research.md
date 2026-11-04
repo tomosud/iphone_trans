@@ -173,7 +173,7 @@ PC（Windows 11、Chrome 152）での結果:
 - マイクは自動操作の環境では使えないので試していない。
 - ローカル確認では `python -m http.server` が Windows で `.mjs` を `text/plain` で返して読み込めないので、`serve.py` を使う（`npm run preview`）。
 
-**GitHub Pages の設定の注意（2026-11-04 に判明）**: Pages の公開元が「GitHub Actions」ではなく「main ブランチのルート」（legacy）になっていて、Actions で作った `dist/` が後から走るブランチのデプロイで上書きされる。そのため `build.mjs` の `?v=` も公開サイトには入らない。`moonshine/` はどちらの方式でも動くように、`app.js` をページ側で `?v=現在時刻` を付けて読み、サンプルは `../sample_en.wav` を読む。
+**GitHub Pages の設定の注意（2026-11-04 に判明）**: Pages の公開元が「GitHub Actions」ではなく「main ブランチのルート」（legacy）になっていて、Actions で作った `dist/` が後から走るブランチのデプロイで上書きされる。そのため `build.mjs` の `?v=` も公開サイトには入らない。同日、公開元を GitHub Actions に切り替えた（`dist/` が公開されるようになった）。`moonshine/` はどちらの方式でも動くように、`app.js` をページ側で `?v=現在時刻` を付けて読み、サンプルは `../sample_en.wav` を読む。
 
 iPhone 1回目（2026-11-04 20:57）: crossOriginIsolated・WASM 初期化（上限 1GB）・モデル読み込み（WASM 191MB）までは動いた。サンプルは上の理由で 404。マイクは AudioContext running 48000Hz・AudioWorklet で開始できたが、文字が1つも出ず、エラーも出なかった。原因を調べるため、ライブラリの `MicTranscriber` をやめて自前の取り込みにし、音量・認識の回数・内部の結果を表示するようにした。
 
