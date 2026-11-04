@@ -1,6 +1,6 @@
 // Moonshine Tiny Streaming test page.
 // Library: @moonshine-ai/moonshine-wasm 0.1.5 (vendored; ?cdn=1 loads it from jsDelivr instead).
-const APP_VERSION = "2026-11-04b"; // bump on every change (shown on the page, also a cache buster)
+const APP_VERSION = "2026-11-04c"; // bump on every change (shown on the page, also a cache buster)
 const LIB_VERSION = "0.1.5";
 const params = new URLSearchParams(location.search);
 const LIB_BASE = params.get("cdn") === "1"
@@ -8,6 +8,8 @@ const LIB_BASE = params.get("cdn") === "1"
   : new URL(`./vendor/moonshine-wasm-${LIB_VERSION}/`, import.meta.url).href;
 
 const $ = (id) => document.getElementById(id);
+// Same cache-busting query as app.js itself.
+const { Resampler, resampleLinear } = await import(new URL("./resample.js" + new URL(import.meta.url).search, import.meta.url).href);
 const T0 = performance.now();
 const now = () => performance.now();
 const sec = (t = now()) => ((t - T0) / 1000).toFixed(2);
@@ -111,6 +113,7 @@ function setButtons() {
   $("sample").disabled = !transcriber || busy;
   $("stop").disabled = !busy;
   $("arch").disabled = busy;
+  $("rerun").disabled = !transcriber || busy || !recording;
 }
 
 function memInfo() {
@@ -236,6 +239,35 @@ function makeListener(getAudioStartWall) {
   };
 }
 
+// ---- recording of the raw microphone input (at the AudioContext rate) ----
+const REC_MAX_SEC = 180;
+let recording = null; // { rate, pcm }
+function concat(chunks, total) {
+  const out = new Float32Array(total);
+  let o = 0;
+  for (const c of chunks) { out.set(c.subarray(0, Math.min(c.length, total - o)), o); o += c.length; if (o >= total) break; }
+  return out;
+}
+function wavBlob(pcm, rate) {
+  const buf = new ArrayBuffer(44 + pcm.length * 2), dv = new DataView(buf);
+  const str = (o, t) => { for (let i = 0; i < t.length; i++) dv.setUint8(o + i, t.charCodeAt(i)); };
+  str(0, "RIFF"); dv.setUint32(4, 36 + pcm.length * 2, true); str(8, "WAVE"); str(12, "fmt ");
+  dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true); dv.setUint32(24, rate, true);
+  dv.setUint32(28, rate * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true); str(36, "data"); dv.setUint32(40, pcm.length * 2, true);
+  for (let i = 0; i < pcm.length; i++) dv.setInt16(44 + i * 2, Math.max(-1, Math.min(1, pcm[i])) * 32767, true);
+  return new Blob([buf], { type: "audio/wav" });
+}
+function setRecording(rec) {
+  const total = Math.min(rec.samples, rec.rate * REC_MAX_SEC);
+  recording = { rate: rec.rate, pcm: concat(rec.chunks, total) };
+  const url = URL.createObjectURL(wavBlob(recording.pcm, recording.rate));
+  const audio = $("playback"); if (audio.src) URL.revokeObjectURL(audio.src);
+  audio.src = url; audio.hidden = false;
+  const a = $("savewav"); a.href = url; a.download = `moonshine-mic-${new Date().toISOString().replace(/[:.]/g, "-")}.wav`; a.hidden = false;
+  log(`録音: ${(total / rec.rate).toFixed(1)}s（${rec.rate}Hz）。再生・保存・認識し直しができます`);
+  setButtons();
+}
+
 // ---- microphone (own capture, so every step can be observed) ----
 // Worklet: mono-mix the input and hand it over in blocks of 2048 frames.
 const WORKLET_SRC = `
@@ -258,25 +290,19 @@ class Cap extends AudioWorkletProcessor {
 registerProcessor("cap", Cap);
 `;
 
-function resampleTo16k(input, rate) {
-  if (rate === 16000) return input;
-  const ratio = rate / 16000;
-  const out = new Float32Array(Math.floor(input.length / ratio));
-  for (let i = 0; i < out.length; i++) {
-    const pos = i * ratio, idx = Math.floor(pos), frac = pos - idx;
-    const a = input[idx] ?? 0, b = input[idx + 1] ?? a;
-    out[i] = a + (b - a) * frac;
-  }
-  return out;
-}
-
 $("start").onclick = async () => {
   if (!transcriber) return;
   setStage("マイクで認識");
   const useScript = $("scriptproc").checked;
   const rawAudio = $("rawaudio").checked;
   // Create and resume the AudioContext inside the tap, before any await (iOS needs the user gesture).
-  const ctx = new AudioContext();
+  const resMode = $("resampler").value;
+  let ctx;
+  if (resMode === "ctx16k") {
+    try { ctx = new AudioContext({ sampleRate: 16000 }); }
+    catch (e) { log(`16kHz の AudioContext を作れない: ${errText(e)}。フィルタ付きに切り替え`, "ng"); }
+  }
+  ctx ??= new AudioContext();
   const resumed = ctx.resume().catch((e) => log(`resume 失敗: ${errText(e)}`, "ng"));
   const m = (mic = { ctx, cancel: false, start: now(), stats: { samples: 0, peak: 0, sumSq: 0, n: 0, passes: 0, lines: 0, last: "" } });
   setButtons();
@@ -298,10 +324,13 @@ $("start").onclick = async () => {
     m.stream.addListener(makeListener(() => m.start));
     m.stream.start();
     const rate = ctx.sampleRate;
+    const resampler = resMode === "linear" ? null : new Resampler(rate);
+    m.rec = { rate, chunks: [], samples: 0 };
     let prevSnap = null;
     const onChunk = (chunk) => {
       if (m.cancel) return;
-      const r = resampleTo16k(chunk, rate);
+      if (m.rec.samples < rate * REC_MAX_SEC) { m.rec.chunks.push(chunk); m.rec.samples += chunk.length; }
+      const r = resampler ? resampler.process(chunk) : resampleLinear(chunk, rate);
       const st = m.stats;
       for (let i = 0; i < r.length; i++) { const v = Math.abs(r[i]); if (v > st.peak) st.peak = v; st.sumSq += r[i] * r[i]; }
       st.n += r.length; st.samples += r.length;
@@ -332,7 +361,7 @@ $("start").onclick = async () => {
       m.node.connect(ctx.destination);
     }
     m.start = now(); // stream audio time 0 is about here
-    log(`取り込み開始: ${typeof AudioWorkletNode !== "undefined" && m.node instanceof AudioWorkletNode ? "AudioWorklet" : "ScriptProcessor"} / ${rawAudio ? "エコー除去など切" : "ブラウザ既定"}`);
+    log(`取り込み開始: ${typeof AudioWorkletNode !== "undefined" && m.node instanceof AudioWorkletNode ? "AudioWorklet" : "ScriptProcessor"} / ${rawAudio ? "エコー除去など切" : "ブラウザ既定"} / 変換 ${resMode}（${rate}Hz → 16kHz） / モデル ${loadedArch}`);
     setStatus("認識中…（英語で話してください）");
     let tick = 0;
     m.timer = setInterval(() => {
@@ -364,6 +393,7 @@ async function stopMic() {
   }
   try { await m.ctx.close(); } catch { /* ignore */ }
   log(`マイク停止（入力 ${(m.stats.samples / 16000).toFixed(1)}s, 認識パス ${m.stats.passes}）`);
+  if (m.rec?.samples) setRecording(m.rec);
   setStage("idle");
   setButtons();
 }
@@ -398,53 +428,62 @@ function parseWav(buf) {
   return { pcm, sr: fmt.sr };
 }
 
-$("sample").onclick = async () => {
+// Feeds 16 kHz (or any rate) PCM through a new stream, in real time or as fast as possible.
+async function runClip(pcm, sr, label, realtime, run) {
+  log(`${label} ${(pcm.length / sr).toFixed(1)}s を${realtime ? "実時間で" : "一気に"}流す（モデル ${loadedArch}）`);
+  setStatus(`${label}で認識中…`);
+  let start = 0;
+  const stream = transcriber.createStream();
+  stream.addListener(makeListener(() => (realtime ? start : null)));
+  stream.start();
+  const chunk = Math.round(sr * 0.1);
+  start = now();
+  let busy = 0;
+  for (let i = 0; i < pcm.length && !run.cancel; i += chunk) {
+    if (realtime) {
+      const wait = start + (i / sr) * 1000 - now();
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    }
+    const t = now();
+    stream.addAudio(pcm.subarray(i, i + chunk), sr);
+    stream.transcribe();
+    busy += now() - t;
+    if (!realtime && (i / chunk) % 20 === 0) await new Promise((r) => setTimeout(r, 0)); // let the UI draw
+  }
+  const t = now();
+  stream.stop();
+  busy += now() - t;
+  stream.close();
+  const wall = (now() - start) / 1000, dur = pcm.length / sr;
+  log(`${label}終了: 経過 ${wall.toFixed(2)}s, 認識の処理時間 ${(busy / 1000).toFixed(2)}s（音声 ${dur.toFixed(1)}s に対して ${(busy / 1000 / dur).toFixed(2)} 倍）`, "ok");
+  setStatus(`${label}終了`);
+}
+
+async function withRun(stage, label, body) {
   if (!transcriber) return;
   const run = (sampleRun = { cancel: false });
   setButtons();
-  setStage("サンプル音声で認識");
-  try {
-    const res = await fetch(new URL(`../sample_en.wav?v=${APP_VERSION}`, import.meta.url));
-    if (!res.ok) throw new Error(`sample_en.wav: ${res.status}`);
-    const { pcm, sr } = parseWav(await res.arrayBuffer());
-    const realtime = $("realtime").checked;
-    log(`サンプル音声 ${(pcm.length / sr).toFixed(1)}s を${realtime ? "実時間で" : "一気に"}流す`);
-    setStatus("サンプル音声で認識中…");
-    let start = 0;
-    const stream = transcriber.createStream();
-    stream.addListener(makeListener(() => (realtime ? start : null)));
-    stream.start();
-    const chunk = Math.round(sr * 0.1);
-    start = now();
-    let busy = 0;
-    for (let i = 0; i < pcm.length && !run.cancel; i += chunk) {
-      if (realtime) {
-        const due = start + (i / sr) * 1000;
-        const wait = due - now();
-        if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-      }
-      const t = now();
-      stream.addAudio(pcm.subarray(i, i + chunk), sr);
-      stream.transcribe();
-      busy += now() - t;
-      if (!realtime && (i / chunk) % 20 === 0) await new Promise((r) => setTimeout(r, 0)); // let the UI draw
-    }
-    const t = now();
-    stream.stop();
-    busy += now() - t;
-    stream.close();
-    const wall = (now() - start) / 1000;
-    log(`サンプル終了: 経過 ${wall.toFixed(2)}s, 認識の処理時間 ${(busy / 1000).toFixed(2)}s（音声 ${(pcm.length / sr).toFixed(1)}s に対して ${(busy / 1000 / (pcm.length / sr)).toFixed(2)} 倍）`, "ok");
-    setStatus("サンプル終了");
-  } catch (e) {
-    log(`サンプル失敗: ${errText(e)}`, "ng");
-    setStatus(`サンプル失敗: ${errText(e)}`, "ng");
-  } finally {
-    sampleRun = null;
-    setStage("idle");
-    setButtons();
-  }
-};
+  setStage(stage);
+  try { await body(run); }
+  catch (e) { log(`${label}失敗: ${errText(e)}`, "ng"); setStatus(`${label}失敗: ${errText(e)}`, "ng"); }
+  finally { sampleRun = null; setStage("idle"); setButtons(); }
+}
+
+$("sample").onclick = () => withRun("サンプル音声で認識", "サンプル", async (run) => {
+  const res = await fetch(new URL(`../sample_en.wav?v=${APP_VERSION}`, import.meta.url));
+  if (!res.ok) throw new Error(`sample_en.wav: ${res.status}`);
+  const { pcm, sr } = parseWav(await res.arrayBuffer());
+  await runClip(pcm, sr, "サンプル", $("realtime").checked, run);
+});
+
+$("rerun").onclick = () => withRun("録音を認識し直す", "録音の再認識", async (run) => {
+  if (!recording) return;
+  const mode = $("resampler").value;
+  // ctx16k only applies to live capture; a recording made at another rate is filtered instead.
+  const pcm16 = mode === "linear" ? resampleLinear(recording.pcm, recording.rate) : new Resampler(recording.rate).process(recording.pcm);
+  log(`録音を変換: ${recording.rate}Hz → 16kHz（${mode === "linear" ? "線形補間だけ" : "フィルタ付き"}）`);
+  await runClip(pcm16, 16000, "録音の再認識", false, run);
+});
 
 // ---- misc ----
 $("clear").onclick = () => { $("finals").textContent = ""; $("interim").textContent = ""; };

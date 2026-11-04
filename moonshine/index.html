@@ -42,8 +42,9 @@
   <div id="crash"></div>
   <div class="row">
     <label>モデル <select id="arch">
-      <option value="TinyStreaming" selected>Tiny Streaming（英語、約 51MB）</option>
-      <option value="SmallStreaming">Small Streaming（英語、大きい）</option>
+      <option value="TinyStreaming" selected>Tiny Streaming（英語、49MB）</option>
+      <option value="SmallStreaming">Small Streaming（英語、158MB）</option>
+      <option value="MediumStreaming">Medium Streaming（英語、291MB、?maxmem=2048 が要りそう）</option>
     </select></label>
   </div>
   <div class="row">
@@ -58,6 +59,11 @@
   <div class="row">
     <label><input id="rawaudio" type="checkbox"> マイクのエコー除去などを切る</label>
     <label><input id="scriptproc" type="checkbox"> ScriptProcessor で取り込む</label>
+    <label>16kHz への変換 <select id="resampler">
+      <option value="filter" selected>フィルタ付き（折り返し雑音を防ぐ）</option>
+      <option value="linear">線形補間だけ（前の版）</option>
+      <option value="ctx16k">AudioContext を 16kHz で作る（ブラウザに任せる）</option>
+    </select></label>
   </div>
   <div class="row">
     <button id="clear" type="button">消去</button>
@@ -69,6 +75,14 @@
   <progress id="meterbar" max="1" value="0"></progress>
   <div id="meter" class="interim" style="font-size:13px">マイクの入力: -</div>
   <div id="out"><div id="finals"></div><div id="interim" class="interim"></div></div>
+  <div class="row" style="margin-top:8px">
+    <label>マイクの録音（モデルが聞いた音の元、最大 3 分）</label>
+  </div>
+  <div class="row">
+    <audio id="playback" controls hidden></audio>
+    <button id="rerun" type="button" disabled>録音を今の設定で認識し直す</button>
+    <a id="savewav" hidden>録音を保存（WAV）</a>
+  </div>
 
   <details open>
     <summary>環境</summary>

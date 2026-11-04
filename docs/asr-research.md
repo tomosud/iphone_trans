@@ -177,6 +177,10 @@ PC（Windows 11、Chrome 152）での結果:
 
 iPhone 1回目（2026-11-04 20:57）: crossOriginIsolated・WASM 初期化（上限 1GB）・モデル読み込み（WASM 191MB）までは動いた。サンプルは上の理由で 404。マイクは AudioContext running 48000Hz・AudioWorklet で開始できたが、文字が1つも出ず、エラーも出なかった。原因を調べるため、ライブラリの `MicTranscriber` をやめて自前の取り込みにし、音量・認識の回数・内部の結果を表示するようにした。
 
+iPhone 2回目（iOS 18.7 と表示、Safari 27.0.1、hardwareConcurrency 4）: **動いた。** Small Streaming（158MB）が上限 1GB で動き、WASM は 505〜607MB。サンプル音声はほぼ正確（処理は音声の 0.38 倍、確定は話し終わりから 0.2〜0.6s）。マイクも認識し、確定は話し終わりから 0.2〜1.0s。ただしマイクの音の認識は精度がかなり低かった。
+
+精度の原因の候補として、48kHz → 16kHz を線形補間だけで変換していて、8kHz より上の音が折り返して雑音になっていた（エイリアシング）。Node で確かめると、9k/12k/15kHz の音が線形補間ではそのまま残り、フィルタ（Blackman 窓の sinc、191 タップ、7.2kHz）を通すと消える。`moonshine/resample.js` にフィルタ付きの変換を作り、既定にした。比べられるように「線形補間だけ」「AudioContext を 16kHz で作る」も選べる。マイクの音は録音しておき、再生・WAV で保存・今の設定で認識し直す、ができる。Medium Streaming（291MB）も選べるようにした。
+
 iPhone で確かめること: `https://tomosud.github.io/iphone_trans/moonshine/` を Safari のタブで開き、(1) 環境の crossOriginIsolated が true になるか（2回目以降の訪問も）、(2) 「モデルを読み込む」が最後まで行くか、(3) 「サンプル音声で試す」の結果と処理時間の倍率、(4) マイクで認識できるか、(5) 落ちた場合は再度開いたときに出る「前回のログ」。「ログをコピー」で貼ってもらう。
 
 ## 5. 未確認のことのまとめ
