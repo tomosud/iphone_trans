@@ -1,6 +1,6 @@
 // Moonshine Tiny Streaming test page.
 // Library: @moonshine-ai/moonshine-wasm 0.1.5 (vendored; ?cdn=1 loads it from jsDelivr instead).
-const APP_VERSION = "2026-11-04c"; // bump on every change (shown on the page, also a cache buster)
+const APP_VERSION = "2026-11-04d"; // bump on every change (shown on the page, also a cache buster)
 const LIB_VERSION = "0.1.5";
 const params = new URLSearchParams(location.search);
 const LIB_BASE = params.get("cdn") === "1"
@@ -263,10 +263,49 @@ function setRecording(rec) {
   const url = URL.createObjectURL(wavBlob(recording.pcm, recording.rate));
   const audio = $("playback"); if (audio.src) URL.revokeObjectURL(audio.src);
   audio.src = url; audio.hidden = false;
-  const a = $("savewav"); a.href = url; a.download = `moonshine-mic-${new Date().toISOString().replace(/[:.]/g, "-")}.wav`; a.hidden = false;
-  log(`録音: ${(total / rec.rate).toFixed(1)}s（${rec.rate}Hz）。再生・保存・認識し直しができます`);
+  const name = `moonshine-mic-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}`;
+  const a = $("savewav"); a.href = url; a.download = `${name}-${rec.rate}.wav`; a.hidden = false;
+  // For sending: the 16 kHz version is what the model hears and about a third of the size.
+  const pcm16 = rec.rate === 16000 ? recording.pcm : new Resampler(rec.rate).process(recording.pcm);
+  recording.files = {
+    small: new File([wavBlob(pcm16, 16000)], `${name}-16000.wav`, { type: "audio/wav" }),
+    full: new File([wavBlob(recording.pcm, rec.rate)], `${name}-${rec.rate}.wav`, { type: "audio/wav" }),
+  };
+  recording.note = [
+    `Moonshine マイク録音 ${name}`,
+    `長さ ${(total / rec.rate).toFixed(1)}s / 取り込み ${rec.rate}Hz`,
+    `設定: ${JSON.stringify(rec.meta)}`,
+    `UA: ${navigator.userAgent}`,
+    "",
+    "認識結果:",
+    ...rec.lines,
+  ].join("\n");
+  $("sharewav").disabled = false;
+  log(`録音: ${(total / rec.rate).toFixed(1)}s（${rec.rate}Hz）。再生・保存・送信・認識し直しができます（16kHz ${MB(recording.files.small.size)} / 元 ${MB(recording.files.full.size)}）`);
   setButtons();
 }
+
+// Share sheet (Mail, AirDrop, Files…). Kept synchronous up to navigator.share so the tap still counts.
+$("sharewav").onclick = async () => {
+  if (!recording?.files) return;
+  const file = $("sharefull").checked ? recording.files.full : recording.files.small;
+  const data = { files: [file], title: file.name, text: recording.note };
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try {
+      await navigator.share(data);
+      log(`録音を送信: ${file.name}（${MB(file.size)}）`);
+    } catch (e) {
+      if (e?.name === "AbortError") log("送信をキャンセル");
+      else { log(`送信失敗: ${errText(e)}`, "ng"); setStatus(`送信失敗: ${errText(e)}`, "ng"); }
+    }
+  } else {
+    // No file sharing (e.g. desktop Firefox): download instead.
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(file); a.download = file.name; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    log(`このブラウザはファイルの共有に対応していないので保存しました: ${file.name}`);
+  }
+};
 
 // ---- microphone (own capture, so every step can be observed) ----
 // Worklet: mono-mix the input and hand it over in blocks of 2048 frames.
@@ -325,7 +364,10 @@ $("start").onclick = async () => {
     m.stream.start();
     const rate = ctx.sampleRate;
     const resampler = resMode === "linear" ? null : new Resampler(rate);
-    m.rec = { rate, chunks: [], samples: 0 };
+    m.rec = { rate, chunks: [], samples: 0, lines: [], meta: { model: loadedArch, resampler: resMode, rawAudio, capture: useScript ? "ScriptProcessor" : "AudioWorklet", version: APP_VERSION } };
+    m.stream.addListener({
+      onLineCompleted: (e) => { if (e.line.text.trim()) m.rec.lines.push(`[${e.line.startTime.toFixed(1)}s] ${e.line.text}`); },
+    });
     let prevSnap = null;
     const onChunk = (chunk) => {
       if (m.cancel) return;
