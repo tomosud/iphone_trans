@@ -1,5 +1,6 @@
 // Moonshine Tiny Streaming test page.
 // Library: @moonshine-ai/moonshine-wasm 0.1.5 (vendored; ?cdn=1 loads it from jsDelivr instead).
+const APP_VERSION = "2026-11-04b"; // bump on every change (shown on the page, also a cache buster)
 const LIB_VERSION = "0.1.5";
 const params = new URLSearchParams(location.search);
 const LIB_BASE = params.get("cdn") === "1"
@@ -85,6 +86,7 @@ function showEnv() {
     `hardwareConcurrency（スレッド数）: ${navigator.hardwareConcurrency ?? "不明"}`,
     `navigator.deviceMemory: ${navigator.deviceMemory ?? "不明"}`,
     `WebGPU (navigator.gpu): ${"gpu" in navigator ? "あり" : "なし"}`,
+    `ページの版: ${APP_VERSION}`,
     `ライブラリ: moonshine-wasm ${LIB_VERSION}（${params.get("cdn") === "1" ? "jsDelivr" : "このサイト"}）`,
     `WASM メモリ上限: ${MAXMEM_MB ? MAXMEM_MB + "MB" : "既定（4GB）"}（?maxmem=1024 / 2048 / default で変更）`,
     `訪問の記録（crossOriginIsolated）: ${visits.map((v) => (v.coi ? "○" : "×")).join(" ")}`,
@@ -234,42 +236,140 @@ function makeListener(getAudioStartWall) {
   };
 }
 
-// ---- microphone ----
+// ---- microphone (own capture, so every step can be observed) ----
+// Worklet: mono-mix the input and hand it over in blocks of 2048 frames.
+const WORKLET_SRC = `
+class Cap extends AudioWorkletProcessor {
+  constructor() { super(); this.buf = new Float32Array(2048); this.n = 0; }
+  process(inputs) {
+    const ch = inputs[0];
+    if (ch && ch.length && ch[0]) {
+      const len = ch[0].length;
+      for (let i = 0; i < len; i++) {
+        let s = 0;
+        for (let c = 0; c < ch.length; c++) s += ch[c][i];
+        this.buf[this.n++] = s / ch.length;
+        if (this.n === this.buf.length) { this.port.postMessage(this.buf.slice(0)); this.n = 0; }
+      }
+    }
+    return true;
+  }
+}
+registerProcessor("cap", Cap);
+`;
+
+function resampleTo16k(input, rate) {
+  if (rate === 16000) return input;
+  const ratio = rate / 16000;
+  const out = new Float32Array(Math.floor(input.length / ratio));
+  for (let i = 0; i < out.length; i++) {
+    const pos = i * ratio, idx = Math.floor(pos), frac = pos - idx;
+    const a = input[idx] ?? 0, b = input[idx + 1] ?? a;
+    out[i] = a + (b - a) * frac;
+  }
+  return out;
+}
+
 $("start").onclick = async () => {
   if (!transcriber) return;
   setStage("マイクで認識");
-  let micStart = 0;
-  mic = new mw.MicTranscriber()
-    .useTranscriber(transcriber)
-    .audioConstraints({ echoCancellation: false, noiseSuppression: false, autoGainControl: true })
-    .addListener(makeListener(() => micStart))
-    .onError((e) => log(`mic error: ${errText(e)}`, "ng"));
+  const useScript = $("scriptproc").checked;
+  const rawAudio = $("rawaudio").checked;
+  // Create and resume the AudioContext inside the tap, before any await (iOS needs the user gesture).
+  const ctx = new AudioContext();
+  const resumed = ctx.resume().catch((e) => log(`resume 失敗: ${errText(e)}`, "ng"));
+  const m = (mic = { ctx, cancel: false, start: now(), stats: { samples: 0, peak: 0, sumSq: 0, n: 0, passes: 0, lines: 0, last: "" } });
   setButtons();
   setStatus("マイクを準備中…");
+  const tPrep = now();
   try {
-    micStart = now();
-    await mic.start();
-    log(`マイク開始（準備 ${((now() - micStart) / 1000).toFixed(2)}s）`);
-    // TS-private fields of MicTranscriber, read only for diagnostics.
-    const ctx = mic.audioContext, track = mic.mediaStream?.getAudioTracks()[0];
-    log(`AudioContext: ${ctx?.state} ${ctx?.sampleRate}Hz / 取り込み: ${mic.workletNode ? "AudioWorklet" : "ScriptProcessor"} / マイク: ${track?.label || "?"} ${JSON.stringify(track?.getSettings?.() ?? {})}`);
-    micStart = now(); // audio starts flowing from about here
+    const audio = rawAudio ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false } : true;
+    m.media = await navigator.mediaDevices.getUserMedia({ audio });
+    await resumed;
+    if (ctx.state !== "running") await ctx.resume();
+    const track = m.media.getAudioTracks()[0];
+    log(`マイク取得 ${((now() - tPrep) / 1000).toFixed(2)}s / AudioContext: ${ctx.state} ${ctx.sampleRate}Hz / マイク: ${track?.label || "?"} muted=${track?.muted} ${JSON.stringify(track?.getSettings?.() ?? {})}`);
+    track?.addEventListener("mute", () => log("マイクの track が mute になった", "ng"));
+    track?.addEventListener("unmute", () => log("マイクの track の mute が解けた"));
+    track?.addEventListener("ended", () => log("マイクの track が終了した", "ng"));
+    ctx.onstatechange = () => log(`AudioContext の状態: ${ctx.state}`);
+
+    m.stream = transcriber.createStream();
+    m.stream.addListener(makeListener(() => m.start));
+    m.stream.start();
+    const rate = ctx.sampleRate;
+    let prevSnap = null;
+    const onChunk = (chunk) => {
+      if (m.cancel) return;
+      const r = resampleTo16k(chunk, rate);
+      const st = m.stats;
+      for (let i = 0; i < r.length; i++) { const v = Math.abs(r[i]); if (v > st.peak) st.peak = v; st.sumSq += r[i] * r[i]; }
+      st.n += r.length; st.samples += r.length;
+      try {
+        m.stream.addAudio(r, 16000);
+        const snap = m.stream.transcribe();
+        if (snap !== prevSnap) {
+          prevSnap = snap; st.passes++;
+          st.lines = snap.lines.length;
+          st.last = snap.lines.length ? snap.lines[snap.lines.length - 1].text : "";
+        }
+      } catch (e) {
+        log(`認識エラー: ${errText(e)}`, "ng");
+      }
+    };
+    m.src = ctx.createMediaStreamSource(m.media);
+    if (!useScript && ctx.audioWorklet) {
+      const url = URL.createObjectURL(new Blob([WORKLET_SRC], { type: "application/javascript" }));
+      try { await ctx.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
+      m.node = new AudioWorkletNode(ctx, "cap");
+      m.node.port.onmessage = (ev) => onChunk(ev.data);
+      m.src.connect(m.node);
+      m.node.connect(ctx.destination); // outputs silence; keeps the graph running
+    } else {
+      m.node = ctx.createScriptProcessor(4096, 1, 1);
+      m.node.onaudioprocess = (ev) => onChunk(new Float32Array(ev.inputBuffer.getChannelData(0)));
+      m.src.connect(m.node);
+      m.node.connect(ctx.destination);
+    }
+    m.start = now(); // stream audio time 0 is about here
+    log(`取り込み開始: ${typeof AudioWorkletNode !== "undefined" && m.node instanceof AudioWorkletNode ? "AudioWorklet" : "ScriptProcessor"} / ${rawAudio ? "エコー除去など切" : "ブラウザ既定"}`);
     setStatus("認識中…（英語で話してください）");
+    let tick = 0;
+    m.timer = setInterval(() => {
+      const st = m.stats;
+      const rms = st.n ? Math.sqrt(st.sumSq / st.n) : 0;
+      const line = `入力 ${(st.samples / 16000).toFixed(1)}s / 直近1秒 peak ${st.peak.toFixed(3)} rms ${rms.toFixed(4)} / 認識パス ${st.passes} / 行 ${st.lines} / 最後: ${st.last || "（なし）"}`;
+      $("meter").textContent = line;
+      $("meterbar").value = Math.min(1, st.peak);
+      if (++tick % 5 === 0) log(line);
+      st.peak = 0; st.sumSq = 0; st.n = 0;
+    }, 1000);
   } catch (e) {
     log(`マイク開始失敗: ${errText(e)}`, "ng");
     setStatus(`マイク開始失敗: ${errText(e)}`, "ng");
-    mic = null;
-    setStage("idle");
-    setButtons();
+    await stopMic();
   }
 };
 
-$("stop").onclick = async () => {
-  if (mic) {
-    const m = mic; mic = null;
-    try { await m.stop(); m.close(); } catch (e) { log(`停止エラー: ${errText(e)}`, "ng"); }
-    log("マイク停止");
+async function stopMic() {
+  const m = mic; mic = null;
+  if (!m) return;
+  m.cancel = true;
+  clearInterval(m.timer);
+  try { m.node?.disconnect(); m.src?.disconnect(); } catch { /* ignore */ }
+  m.media?.getTracks().forEach((t) => t.stop());
+  if (m.stream) {
+    try { m.stream.stop(); } catch (e) { log(`停止エラー: ${errText(e)}`, "ng"); }
+    m.stream.close();
   }
+  try { await m.ctx.close(); } catch { /* ignore */ }
+  log(`マイク停止（入力 ${(m.stats.samples / 16000).toFixed(1)}s, 認識パス ${m.stats.passes}）`);
+  setStage("idle");
+  setButtons();
+}
+
+$("stop").onclick = async () => {
+  await stopMic();
   if (sampleRun) sampleRun.cancel = true;
   setStatus("停止");
   setStage("idle");
@@ -304,7 +404,7 @@ $("sample").onclick = async () => {
   setButtons();
   setStage("サンプル音声で認識");
   try {
-    const res = await fetch("sample_en.wav");
+    const res = await fetch(new URL(`../sample_en.wav?v=${APP_VERSION}`, import.meta.url));
     if (!res.ok) throw new Error(`sample_en.wav: ${res.status}`);
     const { pcm, sr } = parseWav(await res.arrayBuffer());
     const realtime = $("realtime").checked;
@@ -362,7 +462,7 @@ $("purge").onclick = async () => {
   } catch (e) { log(`キャッシュ削除失敗: ${errText(e)}`, "ng"); }
 };
 
-log(`ページ読み込み（crossOriginIsolated=${window.crossOriginIsolated === true}）`);
+log(`ページ読み込み（版 ${APP_VERSION}, crossOriginIsolated=${window.crossOriginIsolated === true}）`);
 if (!window.crossOriginIsolated) {
   setStatus(navigator.serviceWorker ? "Service Worker を準備中…（自動で再読み込みされます。されない場合は手動で再読み込み）" : "Service Worker が使えません（プライベートブラウズ？）", "ng");
 }

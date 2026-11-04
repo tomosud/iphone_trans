@@ -30,13 +30,8 @@ for (const htmlFile of htmlFiles) {
 
 // Moonshine test page: its own folder so the COOP/COEP service worker only controls /moonshine/.
 cpSync(join(rootDir, "moonshine"), join(distDir, "moonshine"), { recursive: true });
-cpSync(join(rootDir, "sample_en.wav"), join(distDir, "moonshine", "sample_en.wav"));
-const moonshineHtml = join(distDir, "moonshine", "index.html");
-writeFileSync(
-  moonshineHtml,
-  readFileSync(moonshineHtml, "utf8").replaceAll('src="app.js"', `src="app.js?v=${buildVersion}"`),
-  "utf8",
-);
+// moonshine/app.js reads ../sample_en.wav, the same path as in the repo root.
+cpSync(join(rootDir, "sample_en.wav"), join(distDir, "sample_en.wav"));
 
 writeFileSync(join(distDir, "build-version.txt"), `${buildVersion}\n`, "utf8");
 

@@ -54,12 +54,20 @@
   </div>
   <div class="row">
     <label><input id="realtime" type="checkbox" checked> サンプルを実時間で流す</label>
+  </div>
+  <div class="row">
+    <label><input id="rawaudio" type="checkbox"> マイクのエコー除去などを切る</label>
+    <label><input id="scriptproc" type="checkbox"> ScriptProcessor で取り込む</label>
+  </div>
+  <div class="row">
     <button id="clear" type="button">消去</button>
     <button id="copy" type="button">ログをコピー</button>
     <button id="purge" type="button">モデルのキャッシュを消す</button>
   </div>
   <progress id="progress" max="1" value="0" hidden></progress>
   <div id="status">待機中</div>
+  <progress id="meterbar" max="1" value="0"></progress>
+  <div id="meter" class="interim" style="font-size:13px">マイクの入力: -</div>
   <div id="out"><div id="finals"></div><div id="interim" class="interim"></div></div>
 
   <details open>
@@ -72,6 +80,6 @@
   </details>
   <p style="font-size:13px"><a href="../speech.html">Web Speech API のテスト</a> ／ <a href="../">トップ</a></p>
 
-<script type="module" src="app.js"></script>
+<script type="module">import("./app.js?v=" + Date.now());</script>
 </body>
 </html>
