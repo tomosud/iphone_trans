@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Web Speech API テスト</title>
+  <style>
+    :root { color-scheme: light dark; --bg: #fff; --fg: #111; --sub: #666; --line: #ddd; --interim: #888; --ok: #0a7; --ng: #c33; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #111; --fg: #eee; --sub: #999; --line: #333; --interim: #888; } }
+    body { margin: 0; padding: 12px 16px 40px; background: var(--bg); color: var(--fg); font: 16px/1.5 -apple-system, system-ui, sans-serif; }
+    h1 { font-size: 18px; margin: 0 0 8px; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+    button, select { font-size: 16px; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--fg); }
+    button.primary { background: #0a66ff; color: #fff; border-color: #0a66ff; }
+    button:disabled { opacity: .5; }
+    label { font-size: 14px; color: var(--sub); }
+    #status { font-size: 14px; color: var(--sub); }
+    #out { border: 1px solid var(--line); border-radius: 8px; padding: 10px; min-height: 160px; max-height: 50vh; overflow-y: auto; }
+    .final { margin: 0 0 6px; }
+    .final small { color: var(--sub); font-size: 12px; margin-left: 6px; }
+    .interim { color: var(--interim); font-style: italic; }
+    details { margin-top: 12px; font-size: 13px; }
+    pre { white-space: pre-wrap; word-break: break-all; font-size: 12px; margin: 6px 0; }
+    .ok { color: var(--ok); } .ng { color: var(--ng); }
+  </style>
+</head>
+<body>
+  <h1>Web Speech API テスト（音声認識だけ）</h1>
+  <div class="row">
+    <button id="start" class="primary" type="button">開始</button>
+    <button id="stop" type="button" disabled>停止</button>
+    <button id="clear" type="button">消去</button>
+    <button id="copy" type="button">ログをコピー</button>
+  </div>
+  <div class="row">
+    <label>言語 <select id="lang">
+      <option value="en-US">英語 (en-US)</option>
+      <option value="en-GB">英語 (en-GB)</option>
+      <option value="ja-JP">日本語 (ja-JP)</option>
+      <option value="zh-CN">中国語 (zh-CN)</option>
+      <option value="ko-KR">韓国語 (ko-KR)</option>
+      <option value="es-ES">スペイン語 (es-ES)</option>
+      <option value="fr-FR">フランス語 (fr-FR)</option>
+    </select></label>
+    <label><input id="continuous" type="checkbox" checked> continuous</label>
+    <label><input id="autorestart" type="checkbox" checked> 止まったら自動で再開</label>
+  </div>
+  <div id="status">待機中</div>
+  <div id="out"><div id="finals"></div><div id="interim" class="interim"></div></div>
+
+  <details open>
+    <summary>環境</summary>
+    <pre id="env"></pre>
+  </details>
+  <details>
+    <summary>イベントのログ（時刻は開始ボタンからの秒）</summary>
+    <pre id="log"></pre>
+  </details>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+let rec = null;
+let wanted = false;         // ユーザーが「開始」している間 true
+let t0 = 0;                 // 開始ボタンの時刻
+let sessionStart = 0;       // 今の認識セッションの開始時刻
+let restarts = 0;
+let utterStart = null;      // 今の発話の最初の途中結果の時刻
+const logLines = [];
+
+const now = () => performance.now();
+const sec = (t) => ((t - t0) / 1000).toFixed(2);
+
+function log(msg) {
+  const line = `${sec(now())}s ${msg}`;
+  logLines.push(line);
+  if (logLines.length > 400) logLines.shift();
+  $("log").textContent = logLines.join("\n");
+}
+
+function setStatus(s) { $("status").textContent = s; }
+
+function showEnv() {
+  const standalone = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+  const lines = [
+    `UA: ${navigator.userAgent}`,
+    `SpeechRecognition: ${window.SpeechRecognition ? "あり" : "なし"} / webkitSpeechRecognition: ${window.webkitSpeechRecognition ? "あり" : "なし"}`,
+    `ホーム画面から起動 (standalone): ${standalone ? "はい" : "いいえ"}`,
+    `secure context: ${window.isSecureContext}`,
+    `crossOriginIsolated: ${window.crossOriginIsolated === true}`,
+    `SharedArrayBuffer: ${typeof SharedArrayBuffer !== "undefined" ? "あり" : "なし"}`,
+    `WebGPU (navigator.gpu): ${"gpu" in navigator ? "あり" : "なし"}`,
+    `navigator.deviceMemory: ${navigator.deviceMemory ?? "不明"}`,
+    `hardwareConcurrency: ${navigator.hardwareConcurrency ?? "不明"}`,
+  ];
+  $("env").textContent = lines.join("\n");
+  if ("gpu" in navigator) {
+    navigator.gpu.requestAdapter().then((a) => {
+      $("env").textContent += `\nWebGPU adapter: ${a ? "取得できた" : "null"}${a && a.features ? " / shader-f16: " + a.features.has("shader-f16") : ""}`;
+    }).catch((e) => { $("env").textContent += `\nWebGPU adapter: エラー ${e}`; });
+  }
+}
+
+function addFinal(text, info) {
+  const p = document.createElement("p");
+  p.className = "final";
+  p.textContent = text;
+  const s = document.createElement("small");
+  s.textContent = info;
+  p.appendChild(s);
+  $("finals").appendChild(p);
+  $("out").scrollTop = $("out").scrollHeight;
+}
+
+function createRecognizer() {
+  const r = new SR();
+  r.lang = $("lang").value;
+  r.continuous = $("continuous").checked;
+  r.interimResults = true;
+  r.maxAlternatives = 1;
+
+  r.onstart = () => { sessionStart = now(); log(`start (lang=${r.lang}, continuous=${r.continuous})`); setStatus("認識中…"); };
+  r.onaudiostart = () => log("audiostart");
+  r.onsoundstart = () => log("soundstart");
+  r.onspeechstart = () => log("speechstart");
+  r.onspeechend = () => log("speechend");
+  r.onsoundend = () => log("soundend");
+  r.onaudioend = () => log("audioend");
+  r.onnomatch = () => log("nomatch");
+
+  r.onresult = (ev) => {
+    let interim = "";
+    for (let i = ev.resultIndex; i < ev.results.length; i++) {
+      const res = ev.results[i];
+      const text = res[0].transcript.trim();
+      if (res.isFinal) {
+        const t = now();
+        const fromStart = utterStart ? ((t - utterStart) / 1000).toFixed(2) : "?";
+        const conf = typeof res[0].confidence === "number" ? res[0].confidence.toFixed(2) : "-";
+        log(`FINAL[${i}] (最初の途中結果から ${fromStart}s, conf=${conf}): ${text}`);
+        if (text) addFinal(text, `${sec(t)}s / 途中結果から ${fromStart}s`);
+        utterStart = null;
+      } else {
+        if (!utterStart) { utterStart = now(); log(`最初の途中結果[${i}]: ${text}`); }
+        interim += text + " ";
+      }
+    }
+    $("interim").textContent = interim;
+  };
+
+  r.onerror = (ev) => {
+    log(`error: ${ev.error}${ev.message ? " " + ev.message : ""}`);
+    setStatus(`エラー: ${ev.error}`);
+    if (ev.error === "not-allowed" || ev.error === "service-not-allowed" || ev.error === "language-not-supported") {
+      wanted = false; // 再開しても無駄なもの
+      updateButtons();
+    }
+  };
+
+  r.onend = () => {
+    const dur = ((now() - sessionStart) / 1000).toFixed(1);
+    log(`end (このセッション ${dur}s)`);
+    $("interim").textContent = "";
+    if (wanted && $("autorestart").checked) {
+      restarts++;
+      setStatus(`再開中…（${restarts}回目）`);
+      setTimeout(() => {
+        if (!wanted) return;
+        try { rec = createRecognizer(); rec.start(); } catch (e) { log(`再開失敗: ${e}`); }
+      }, 150);
+    } else {
+      wanted = false;
+      updateButtons();
+      setStatus("停止");
+    }
+  };
+  return r;
+}
+
+function updateButtons() {
+  $("start").disabled = wanted;
+  $("stop").disabled = !wanted;
+}
+
+$("start").onclick = () => {
+  if (!SR) { setStatus("このブラウザは Web Speech API（音声認識）に対応していません"); return; }
+  t0 = now(); sessionStart = t0; restarts = 0; utterStart = null;
+  wanted = true; updateButtons();
+  try { rec = createRecognizer(); rec.start(); } catch (e) { log(`start 失敗: ${e}`); setStatus(`開始できません: ${e}`); wanted = false; updateButtons(); }
+};
+$("stop").onclick = () => { wanted = false; updateButtons(); if (rec) rec.stop(); };
+$("clear").onclick = () => { $("finals").textContent = ""; $("interim").textContent = ""; };
+$("copy").onclick = async () => {
+  const text = $("env").textContent + "\n\n" + logLines.join("\n");
+  try { await navigator.clipboard.writeText(text); setStatus("ログをコピーしました"); }
+  catch { setStatus("コピーできませんでした（ログを長押しで選択してください）"); }
+};
+
+// iOS の Safari では continuous=true だと詰まることがあるとの報告があるので、既定は false＋自動再開にする
+const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+if (isIOS) $("continuous").checked = false;
+
+showEnv();
+if (!SR) setStatus("このブラウザは Web Speech API（音声認識）に対応していません");
+</script>
+</body>
+</html>

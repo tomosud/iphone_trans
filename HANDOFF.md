@@ -51,15 +51,19 @@ Moonshine は Useful Sensors（moonshine-ai）の英語向け軽量音声認識�
 ```
 音声 ─→ 音声認識 ─→ 原文をすぐ表示 ─→ Claude で訳す ─→ 訳を表示
         (A) Web Speech API                 (Haiku で速い訳 → Sonnet で差し替え)
+        (A2) クラウドのストリーミング認識（Deepgram Flux）
         (B) キーボードの音声入力（今の index.html と同じ）
         (C) 端末内モデル（Moonshine/Whisper、後回し）
 ```
 
 ### 3.1 音声認識
 
-- **(A) Web Speech API**（`webkitSpeechRecognition`）: iPhone の Safari と Android の Chrome で使える。途中結果（interim）が出るので、話している最中から原文を表示できる。iPhone では連続認識が無音で止まることがあるので、止まったら自動で再開する。ホーム画面に追加した PWA では使えない版があるとの情報もあるので、実機で確認する。
+調査の結果は `docs/asr-research.md`（2026-11-04）。
+
+- **(A) Web Speech API**（`webkitSpeechRecognition`）: iPhone の Safari と Android の Chrome で使える。途中結果（interim）が出るので、話している最中から原文を表示できる。無料で、追加のキーも要らない。**ホーム画面に追加した PWA では使えない**（caniuse・WebKit のバグ 225298。iOS 26 からはホーム画面に追加すると既定で Web アプリとして開くので、Safari のタブで使う）。iPhone では `continuous=false` にして、止まったら `onend` で自動で再開するのが定番。音声は Apple のサーバーに送られる見込み。最小ページ `speech.html` を作り、PC の Chrome で認識できることを確認済み。
+- **(A2) クラウドのストリーミング認識**: (A) が駄目なとき、または PWA で使いたいときの次の候補は **Deepgram Flux**。ブラウザから WebSocket で直接つなげ（キーはサブプロトコルで渡す）、話し終わりの判定が付いている。英語専用と多言語版（日本語を含む）、約 $0.46/時、$200 の無料クレジット。キーは「文字起こし専用・期限付き」で作り、3.3 と同じくパスワードマネージャーで扱う。どのサービスも一時トークンの発行には長期のキーが要るので、サーバーなしでは「絞ったキーを置く」形になる。
 - **(B) キーボードの音声入力**: 今の index.html の方式。確実に動くが、入力欄を選んでマイクを押す操作が要る。(A) が駄目なときの代わり。
-- **(C) 端末内モデル**: 通信なしで動くのが利点。再挑戦するなら、版を固定し、まず PC の Chrome で動かしてから iPhone で試す。tiny・量子化（q8）・単一スレッドから始め、エラーをすべて画面とログに出す。
+- **(C) 端末内モデル**: 通信なしで動くのが利点。前回の `@moonshine-ai/moonshine-js` は終了しており（2026-08 に archived）、後継は `@moonshine-ai/moonshine-wasm@0.1.5`（マルチスレッド必須なので `coi-serviceworker` が要る）。iPhone の Safari で動いた報告はまだ無く、iOS 26 の Safari には onnxruntime-web のメモリの不具合の報告もある。再挑戦するなら版を固定し、まず PC の Chrome で動かしてから iPhone で試す。手順は `docs/asr-research.md` 3.1。
 
 ### 3.2 翻訳（Claude API をページから直接呼ぶ）
 
@@ -97,13 +101,16 @@ Moonshine は Useful Sensors（moonshine-ai）の英語向け軽量音声認識�
 ## 5. 最初にやること（順番）
 
 1. **公開サイトの現状確認**: `whisper.html` が `dist/` に入っていない件を確かめる（入れるか、リンクを外す）。
-2. **最小構成を作る**: Web Speech API で原文を出す → Haiku で訳す（キーは入力欄に手で貼る仮の形でよい）。まず PC の Chrome、次に iPhone の Safari。
-3. **遅延を測る**: 話し終わり → 原文確定 → 訳の表示、の各時刻を画面に出す（youtube_lean_english のデバッグ表示と同じ考え方）。
-4. **キーの保存**: パスワードマネージャー方式＋スマホ専用キー＋ワークスペースの利用上限。
-5. **品質**: Haiku → Sonnet の差し替え、名前表、原文の補正を足す。
-6. **余力があれば**: 端末内の音声認識（Moonshine/Whisper）を (C) として、版を固定して再挑戦。
+2. **iPhone で `speech.html` を確かめる**（ユーザーに依頼）: Safari のタブで、途中結果・確定結果が出るか、止まったときに自動で再開するか、ホーム画面に追加すると使えないか。確認項目は `docs/asr-research.md` 4.。駄目なら (A2) Deepgram Flux を試す。
+3. **最小構成を作る**: Web Speech API で原文を出す → Haiku で訳す（キーは入力欄に手で貼る仮の形でよい）。まず PC の Chrome、次に iPhone の Safari。
+4. **遅延を測る**: 話し終わり → 原文確定 → 訳の表示、の各時刻を画面に出す（youtube_lean_english のデバッグ表示と同じ考え方）。
+5. **キーの保存**: パスワードマネージャー方式＋スマホ専用キー＋ワークスペースの利用上限。
+6. **品質**: Haiku → Sonnet の差し替え、名前表、原文の補正を足す。
+7. **余力があれば**: 端末内の音声認識（Moonshine/Whisper）を (C) として、版を固定して再挑戦。
 
 ## 6. 調査タスク：音声認識の選択肢を最新の情報で調べ直す
+
+**2026-11-04 に実施済み。結果は `docs/asr-research.md`。** 以下は依頼の内容の記録。
 
 2026年春（3月）に試した Moonshine は、iPhone の Safari で動かなかった（2.3 参照）。半年以上たっているので、現時点（2026年11月）の最新の情報で次を調べ直す。結果は `docs/asr-research.md` にまとめ、この文書の「3. 再挑戦の方針」と「5. 最初にやること」を必要に応じて更新する。
 
