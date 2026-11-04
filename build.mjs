@@ -28,9 +28,19 @@ for (const htmlFile of htmlFiles) {
   writeFileSync(join(distDir, htmlFile), sourceHtml, "utf8");
 }
 
+// Moonshine test page: its own folder so the COOP/COEP service worker only controls /moonshine/.
+cpSync(join(rootDir, "moonshine"), join(distDir, "moonshine"), { recursive: true });
+cpSync(join(rootDir, "sample_en.wav"), join(distDir, "moonshine", "sample_en.wav"));
+const moonshineHtml = join(distDir, "moonshine", "index.html");
+writeFileSync(
+  moonshineHtml,
+  readFileSync(moonshineHtml, "utf8").replaceAll('src="app.js"', `src="app.js?v=${buildVersion}"`),
+  "utf8",
+);
+
 writeFileSync(join(distDir, "build-version.txt"), `${buildVersion}\n`, "utf8");
 
 console.log("Built files:");
-for (const file of [...htmlFiles, ...assetFiles, "build-version.txt"]) {
+for (const file of [...htmlFiles, ...assetFiles, "moonshine/", "build-version.txt"]) {
   console.log(`- dist/${file}`);
 }

@@ -63,7 +63,7 @@ Moonshine は Useful Sensors（moonshine-ai）の英語向け軽量音声認識�
 - **(A) Web Speech API**（`webkitSpeechRecognition`）: iPhone の Safari と Android の Chrome で使える。途中結果（interim）が出るので、話している最中から原文を表示できる。無料で、追加のキーも要らない。**ホーム画面に追加した PWA では使えない**（caniuse・WebKit のバグ 225298。iOS 26 からはホーム画面に追加すると既定で Web アプリとして開くので、Safari のタブで使う）。iPhone では `continuous=false` にして、止まったら `onend` で自動で再開するのが定番。音声は Apple のサーバーに送られる見込み。最小ページ `speech.html` を作り、PC の Chrome で認識できることを確認済み。
 - **(A2) クラウドのストリーミング認識**: (A) が駄目なとき、または PWA で使いたいときの次の候補は **Deepgram Flux**。ブラウザから WebSocket で直接つなげ（キーはサブプロトコルで渡す）、話し終わりの判定が付いている。英語専用と多言語版（日本語を含む）、約 $0.46/時、$200 の無料クレジット。キーは「文字起こし専用・期限付き」で作り、3.3 と同じくパスワードマネージャーで扱う。どのサービスも一時トークンの発行には長期のキーが要るので、サーバーなしでは「絞ったキーを置く」形になる。
 - **(B) キーボードの音声入力**: 今の index.html の方式。確実に動くが、入力欄を選んでマイクを押す操作が要る。(A) が駄目なときの代わり。
-- **(C) 端末内モデル**: 通信なしで動くのが利点。前回の `@moonshine-ai/moonshine-js` は終了しており（2026-08 に archived）、後継は `@moonshine-ai/moonshine-wasm@0.1.5`（マルチスレッド必須なので `coi-serviceworker` が要る）。iPhone の Safari で動いた報告はまだ無く、iOS 26 の Safari には onnxruntime-web のメモリの不具合の報告もある。再挑戦するなら版を固定し、まず PC の Chrome で動かしてから iPhone で試す。手順は `docs/asr-research.md` 3.1。
+- **(C) 端末内モデル**: 通信なしで動くのが利点。前回の `@moonshine-ai/moonshine-js` は終了しており（2026-08 に archived）、後継は `@moonshine-ai/moonshine-wasm@0.1.5`（マルチスレッド必須なので `coi-serviceworker` が要る）。iPhone の Safari で動いた報告はまだ無く、iOS 26 の Safari には onnxruntime-web のメモリの不具合の報告もある。再挑戦するなら版を固定し、まず PC の Chrome で動かしてから iPhone で試す。手順は `docs/asr-research.md` 3.1。 **2026-11-04: Tiny Streaming のページ `moonshine/` を作り、PC の Chrome で動いた（`docs/asr-research.md` 4.2）。iPhone での確認待ち。**
 
 ### 3.2 翻訳（Claude API をページから直接呼ぶ）
 

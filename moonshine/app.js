@@ -1,0 +1,369 @@
+// Moonshine Tiny Streaming test page.
+// Library: @moonshine-ai/moonshine-wasm 0.1.5 (vendored; ?cdn=1 loads it from jsDelivr instead).
+const LIB_VERSION = "0.1.5";
+const params = new URLSearchParams(location.search);
+const LIB_BASE = params.get("cdn") === "1"
+  ? `https://cdn.jsdelivr.net/npm/@moonshine-ai/moonshine-wasm@${LIB_VERSION}/dist/`
+  : new URL(`./vendor/moonshine-wasm-${LIB_VERSION}/`, import.meta.url).href;
+
+const $ = (id) => document.getElementById(id);
+const T0 = performance.now();
+const now = () => performance.now();
+const sec = (t = now()) => ((t - T0) / 1000).toFixed(2);
+const MB = (b) => (b / 1048576).toFixed(0) + "MB";
+const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+
+// ---- log (kept in localStorage so it survives a tab crash) ----
+const LS_LOG = "moonshine-test-log";
+const LS_STAGE = "moonshine-test-stage";
+const LS_VISITS = "moonshine-test-visits";
+const lsGet = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* ignore */ } };
+
+const logLines = [];
+function log(msg, cls) {
+  const line = `${sec()}s ${msg}`;
+  logLines.push(line);
+  if (logLines.length > 500) logLines.shift();
+  $("log").textContent = logLines.join("\n");
+  lsSet(LS_LOG, JSON.stringify({ at: new Date().toISOString(), lines: logLines.slice(-200) }));
+  if (cls === "ng") console.error(line); else console.log(line);
+}
+function setStatus(s, cls = "") { $("status").textContent = s; $("status").className = cls; }
+function setStage(stage) { lsSet(LS_STAGE, JSON.stringify({ stage, at: new Date().toISOString() })); }
+
+// Show the previous run's log if the page ended in the middle of something (likely a crash / OOM reload).
+(function showPreviousCrash() {
+  let prev = null, prevLog = null;
+  try { prev = JSON.parse(lsGet(LS_STAGE) || "null"); prevLog = JSON.parse(lsGet(LS_LOG) || "null"); } catch { /* ignore */ }
+  if (prev && !["idle", "closed"].includes(prev.stage)) {
+    const box = $("crash");
+    box.style.display = "block";
+    box.innerHTML = "";
+    const p = document.createElement("div");
+    p.textContent = `前回（${prev.at}）は「${prev.stage}」の途中でページが終わりました。タブが落ちた（メモリ不足など）可能性があります。`;
+    box.appendChild(p);
+    if (prevLog && prevLog.lines) {
+      const d = document.createElement("details");
+      d.innerHTML = "<summary>前回のログ</summary>";
+      const pre = document.createElement("pre");
+      pre.id = "prevlog";
+      pre.textContent = prevLog.lines.join("\n");
+      d.appendChild(pre);
+      box.appendChild(d);
+    }
+  }
+  setStage("idle");
+})();
+addEventListener("pagehide", () => setStage("closed"));
+addEventListener("error", (e) => { log(`window error: ${e.message} @ ${e.filename}:${e.lineno}`, "ng"); setStatus(`エラー: ${e.message}`, "ng"); });
+addEventListener("unhandledrejection", (e) => { log(`unhandledrejection: ${errText(e.reason)}`, "ng"); setStatus(`エラー: ${errText(e.reason)}`, "ng"); });
+function errText(e) { return e && (e.stack || e.message) ? `${e.name || "Error"}: ${e.message}${e.code !== undefined ? ` (code ${e.code})` : ""}` : String(e); }
+
+// ---- environment ----
+let visits = [];
+try { visits = JSON.parse(lsGet(LS_VISITS) || "[]"); } catch { visits = []; }
+visits.push({ at: new Date().toISOString(), coi: window.crossOriginIsolated === true, sw: !!navigator.serviceWorker?.controller });
+visits = visits.slice(-6);
+lsSet(LS_VISITS, JSON.stringify(visits));
+
+// Shared WebAssembly memory reserves its maximum size up front. The build asks for 4GB,
+// which iOS may refuse ("Out of memory"), so on iOS we default to a 1GB cap.
+const memParam = params.get("maxmem"); // MB, or "default"
+const MAXMEM_MB = memParam ? (memParam === "default" ? 0 : Number(memParam)) : (isIOS ? 1024 : 0);
+
+function showEnv() {
+  const standalone = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+  const lines = [
+    `UA: ${navigator.userAgent}`,
+    `ホーム画面から起動 (standalone): ${standalone ? "はい" : "いいえ"}`,
+    `secure context: ${window.isSecureContext}`,
+    `crossOriginIsolated: ${window.crossOriginIsolated === true}`,
+    `SharedArrayBuffer: ${typeof SharedArrayBuffer !== "undefined" ? "あり" : "なし"}`,
+    `Service Worker が制御中: ${navigator.serviceWorker?.controller ? "はい" : "いいえ"}`,
+    `AudioWorklet: ${typeof AudioWorkletNode !== "undefined" ? "あり" : "なし"}`,
+    `hardwareConcurrency（スレッド数）: ${navigator.hardwareConcurrency ?? "不明"}`,
+    `navigator.deviceMemory: ${navigator.deviceMemory ?? "不明"}`,
+    `WebGPU (navigator.gpu): ${"gpu" in navigator ? "あり" : "なし"}`,
+    `ライブラリ: moonshine-wasm ${LIB_VERSION}（${params.get("cdn") === "1" ? "jsDelivr" : "このサイト"}）`,
+    `WASM メモリ上限: ${MAXMEM_MB ? MAXMEM_MB + "MB" : "既定（4GB）"}（?maxmem=1024 / 2048 / default で変更）`,
+    `訪問の記録（crossOriginIsolated）: ${visits.map((v) => (v.coi ? "○" : "×")).join(" ")}`,
+  ];
+  $("env").textContent = lines.join("\n");
+}
+showEnv();
+
+// ---- moonshine ----
+let mw = null;          // the library module
+let wasmModule = null;  // the Emscripten module
+let transcriber = null;
+let loadedArch = null;
+let mic = null;
+let sampleRun = null;
+let memTimer = 0;
+
+function setButtons() {
+  const busy = !!mic || !!sampleRun;
+  $("load").disabled = busy;
+  $("start").disabled = !transcriber || busy;
+  $("sample").disabled = !transcriber || busy;
+  $("stop").disabled = !busy;
+  $("arch").disabled = busy;
+}
+
+function memInfo() {
+  const parts = [];
+  const buf = wasmModule?.HEAPU8?.buffer;
+  if (buf) parts.push(`wasm ${MB(buf.byteLength)}`);
+  if (performance.memory) parts.push(`JS heap ${MB(performance.memory.usedJSHeapSize)}`);
+  return parts.join(" / ") || "不明";
+}
+let lastMem = "";
+function startMemWatch() {
+  clearInterval(memTimer);
+  memTimer = setInterval(() => {
+    const m = memInfo();
+    if (m !== lastMem) { lastMem = m; log(`メモリ: ${m}`); }
+  }, 3000);
+}
+
+async function loadLibrary() {
+  if (mw) return;
+  setStage("ライブラリの読み込み");
+  log(`ライブラリを読み込み: ${LIB_BASE}`);
+  let t = now();
+  mw = await import(LIB_BASE + "index.js");
+  const emscripten = await import(LIB_BASE + "moonshine.mjs");
+  log(`ライブラリ読み込み完了 ${((now() - t) / 1000).toFixed(2)}s`);
+
+  setStage("WASM の初期化");
+  t = now();
+  const factory = emscripten.default;
+  wasmModule = await mw.loadMoonshineModule({
+    factory: (args) => {
+      const extra = {};
+      if (MAXMEM_MB) {
+        // Same initial size as the build (64MB), smaller maximum.
+        extra.wasmMemory = new WebAssembly.Memory({ initial: 1024, maximum: MAXMEM_MB * 16, shared: true });
+        log(`共有メモリを作成: 初期 64MB / 上限 ${MAXMEM_MB}MB`);
+      }
+      return factory({ ...args, ...extra });
+    },
+  });
+  log(`WASM 初期化完了 ${((now() - t) / 1000).toFixed(2)}s（${memInfo()}）`, "ok");
+  startMemWatch();
+}
+
+$("load").onclick = async () => {
+  const archName = $("arch").value;
+  if (transcriber && loadedArch === archName) { setStatus("読み込み済み"); return; }
+  if (!window.crossOriginIsolated) {
+    log("crossOriginIsolated が false。Service Worker の準備ができていない可能性", "ng");
+    setStatus("crossOriginIsolated が false です。ページを再読み込みしてください（1回目は Service Worker の登録で自動的に再読み込みされます）", "ng");
+    return;
+  }
+  $("load").disabled = true;
+  try {
+    await loadLibrary();
+    if (transcriber) { transcriber.close(); transcriber = null; }
+    setStage(`モデル ${archName} のダウンロード`);
+    setStatus("モデルをダウンロード中…");
+    const bar = $("progress");
+    bar.hidden = false; bar.value = 0;
+    let lastPct = -1;
+    const t = now();
+    const arch = mw.ModelArch[archName];
+    const downloader = new mw.AssetDownloader({
+      onProgress: (loaded, total, file) => {
+        const f = total ? loaded / total : 0;
+        bar.value = f;
+        const pct = Math.floor(f * 10) * 10;
+        if (pct !== lastPct) { lastPct = pct; log(`ダウンロード ${pct}% (${MB(loaded)}${total ? " / " + MB(total) : ""}) ${file}`); }
+        setStatus(`モデルをダウンロード中… ${Math.round(f * 100)}%`);
+      },
+    });
+    // Transcriber.load downloads every file in the manifest and then builds the model in WASM.
+    transcriber = await mw.Transcriber.load({ language: "en", modelArch: arch, downloader });
+    loadedArch = archName;
+    bar.hidden = true;
+    log(`モデル ${archName} 準備完了 ${((now() - t) / 1000).toFixed(2)}s（${memInfo()}）`, "ok");
+    setStatus(`モデル ${archName} 準備完了。マイク開始かサンプル音声で試してください`);
+    setStage("idle");
+  } catch (e) {
+    log(`読み込み失敗: ${errText(e)}`, "ng");
+    if (e?.stack) log(e.stack);
+    setStatus(`読み込み失敗: ${errText(e)}`, "ng");
+    setStage("idle");
+  } finally {
+    setButtons();
+  }
+};
+
+// ---- output ----
+function addFinal(text, info) {
+  const p = document.createElement("p");
+  p.className = "final";
+  p.textContent = text;
+  const s = document.createElement("small");
+  s.textContent = info;
+  p.appendChild(s);
+  $("finals").appendChild(p);
+  $("out").scrollTop = $("out").scrollHeight;
+}
+
+// audioStartWall: wall-clock time (performance.now) that corresponds to stream audio time 0.
+function makeListener(getAudioStartWall) {
+  const firstSeen = new Map();
+  return {
+    onLineTextChanged: (e) => {
+      const l = e.line;
+      if (!firstSeen.has(l.id)) { firstSeen.set(l.id, now()); log(`最初の途中結果 (音声 ${l.startTime.toFixed(2)}s): ${l.text}`); }
+      $("interim").textContent = l.text;
+    },
+    onLineCompleted: (e) => {
+      const l = e.line;
+      const t = now();
+      const audioEnd = l.startTime + l.duration;
+      const start = getAudioStartWall(); // null when audio is not fed in real time
+      const lag = start === null ? "" : `話し終わりから ${((t - (start + audioEnd * 1000)) / 1000).toFixed(2)}s, `;
+      log(`確定 (音声 ${l.startTime.toFixed(2)}〜${audioEnd.toFixed(2)}s, ${lag}処理 ${l.lastTranscriptionLatencyMs}ms): ${l.text}`);
+      $("interim").textContent = "";
+      if (l.text.trim()) addFinal(l.text, `${sec(t)}s${lag ? " / " + lag.slice(0, -2) : ""}`);
+    },
+    onError: (e) => log(`stream error: ${errText(e.error)}`, "ng"),
+  };
+}
+
+// ---- microphone ----
+$("start").onclick = async () => {
+  if (!transcriber) return;
+  setStage("マイクで認識");
+  let micStart = 0;
+  mic = new mw.MicTranscriber()
+    .useTranscriber(transcriber)
+    .audioConstraints({ echoCancellation: false, noiseSuppression: false, autoGainControl: true })
+    .addListener(makeListener(() => micStart))
+    .onError((e) => log(`mic error: ${errText(e)}`, "ng"));
+  setButtons();
+  setStatus("マイクを準備中…");
+  try {
+    micStart = now();
+    await mic.start();
+    log(`マイク開始（準備 ${((now() - micStart) / 1000).toFixed(2)}s）`);
+    // TS-private fields of MicTranscriber, read only for diagnostics.
+    const ctx = mic.audioContext, track = mic.mediaStream?.getAudioTracks()[0];
+    log(`AudioContext: ${ctx?.state} ${ctx?.sampleRate}Hz / 取り込み: ${mic.workletNode ? "AudioWorklet" : "ScriptProcessor"} / マイク: ${track?.label || "?"} ${JSON.stringify(track?.getSettings?.() ?? {})}`);
+    micStart = now(); // audio starts flowing from about here
+    setStatus("認識中…（英語で話してください）");
+  } catch (e) {
+    log(`マイク開始失敗: ${errText(e)}`, "ng");
+    setStatus(`マイク開始失敗: ${errText(e)}`, "ng");
+    mic = null;
+    setStage("idle");
+    setButtons();
+  }
+};
+
+$("stop").onclick = async () => {
+  if (mic) {
+    const m = mic; mic = null;
+    try { await m.stop(); m.close(); } catch (e) { log(`停止エラー: ${errText(e)}`, "ng"); }
+    log("マイク停止");
+  }
+  if (sampleRun) sampleRun.cancel = true;
+  setStatus("停止");
+  setStage("idle");
+  setButtons();
+};
+
+// ---- sample file (sample_en.wav: 16 kHz mono PCM16, 11 s) ----
+function parseWav(buf) {
+  const dv = new DataView(buf);
+  let off = 12, fmt = null, data = null;
+  while (off + 8 <= dv.byteLength) {
+    const id = String.fromCharCode(dv.getUint8(off), dv.getUint8(off + 1), dv.getUint8(off + 2), dv.getUint8(off + 3));
+    const size = dv.getUint32(off + 4, true);
+    if (id === "fmt ") fmt = { ch: dv.getUint16(off + 10, true), sr: dv.getUint32(off + 12, true), bits: dv.getUint16(off + 22, true) };
+    if (id === "data") data = { off: off + 8, size };
+    off += 8 + size + (size & 1);
+  }
+  if (!fmt || !data || fmt.bits !== 16) throw new Error("16bit PCM の WAV ではありません");
+  const n = Math.floor(data.size / 2 / fmt.ch);
+  const pcm = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let s = 0;
+    for (let c = 0; c < fmt.ch; c++) s += dv.getInt16(data.off + (i * fmt.ch + c) * 2, true);
+    pcm[i] = s / fmt.ch / 32768;
+  }
+  return { pcm, sr: fmt.sr };
+}
+
+$("sample").onclick = async () => {
+  if (!transcriber) return;
+  const run = (sampleRun = { cancel: false });
+  setButtons();
+  setStage("サンプル音声で認識");
+  try {
+    const res = await fetch("sample_en.wav");
+    if (!res.ok) throw new Error(`sample_en.wav: ${res.status}`);
+    const { pcm, sr } = parseWav(await res.arrayBuffer());
+    const realtime = $("realtime").checked;
+    log(`サンプル音声 ${(pcm.length / sr).toFixed(1)}s を${realtime ? "実時間で" : "一気に"}流す`);
+    setStatus("サンプル音声で認識中…");
+    let start = 0;
+    const stream = transcriber.createStream();
+    stream.addListener(makeListener(() => (realtime ? start : null)));
+    stream.start();
+    const chunk = Math.round(sr * 0.1);
+    start = now();
+    let busy = 0;
+    for (let i = 0; i < pcm.length && !run.cancel; i += chunk) {
+      if (realtime) {
+        const due = start + (i / sr) * 1000;
+        const wait = due - now();
+        if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      }
+      const t = now();
+      stream.addAudio(pcm.subarray(i, i + chunk), sr);
+      stream.transcribe();
+      busy += now() - t;
+      if (!realtime && (i / chunk) % 20 === 0) await new Promise((r) => setTimeout(r, 0)); // let the UI draw
+    }
+    const t = now();
+    stream.stop();
+    busy += now() - t;
+    stream.close();
+    const wall = (now() - start) / 1000;
+    log(`サンプル終了: 経過 ${wall.toFixed(2)}s, 認識の処理時間 ${(busy / 1000).toFixed(2)}s（音声 ${(pcm.length / sr).toFixed(1)}s に対して ${(busy / 1000 / (pcm.length / sr)).toFixed(2)} 倍）`, "ok");
+    setStatus("サンプル終了");
+  } catch (e) {
+    log(`サンプル失敗: ${errText(e)}`, "ng");
+    setStatus(`サンプル失敗: ${errText(e)}`, "ng");
+  } finally {
+    sampleRun = null;
+    setStage("idle");
+    setButtons();
+  }
+};
+
+// ---- misc ----
+$("clear").onclick = () => { $("finals").textContent = ""; $("interim").textContent = ""; };
+$("copy").onclick = async () => {
+  const prev = $("prevlog") ? "\n\n[前回のログ]\n" + $("prevlog").textContent : "";
+  const text = $("env").textContent + "\n\n" + logLines.join("\n") + prev;
+  try { await navigator.clipboard.writeText(text); setStatus("ログをコピーしました"); }
+  catch { setStatus("コピーできませんでした（ログを長押しで選択してください）", "ng"); }
+};
+$("purge").onclick = async () => {
+  try {
+    const ok = await caches.delete("moonshine-models-v1");
+    log(`モデルのキャッシュを削除: ${ok ? "削除した" : "無かった"}`);
+    setStatus("モデルのキャッシュを消しました（次の読み込みで再ダウンロード）");
+  } catch (e) { log(`キャッシュ削除失敗: ${errText(e)}`, "ng"); }
+};
+
+log(`ページ読み込み（crossOriginIsolated=${window.crossOriginIsolated === true}）`);
+if (!window.crossOriginIsolated) {
+  setStatus(navigator.serviceWorker ? "Service Worker を準備中…（自動で再読み込みされます。されない場合は手動で再読み込み）" : "Service Worker が使えません（プライベートブラウズ？）", "ng");
+}
+setButtons();

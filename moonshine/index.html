@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Moonshine Tiny Streaming テスト</title>
+  <!--
+    moonshine-wasm はマルチスレッド版（SharedArrayBuffer が必要）なので、ページを
+    cross-origin isolated にする。GitHub Pages はヘッダーを付けられないので
+    coi-serviceworker で付ける。Safari で 2 回目以降に効かなくなる報告への対策として
+    coepCredentialless を切る（require-corp にする）。
+    この Service Worker の範囲は /moonshine/ の下だけ（ほかのページには影響しない）。
+  -->
+  <script>window.coi = { coepCredentialless: () => false, quiet: false };</script>
+  <script src="coi-serviceworker.js"></script>
+  <style>
+    :root { color-scheme: light dark; --bg: #fff; --fg: #111; --sub: #666; --line: #ddd; --interim: #888; --ok: #0a7; --ng: #c33; --warn: #b70; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #111; --fg: #eee; --sub: #999; --line: #333; --interim: #888; --warn: #e90; } }
+    body { margin: 0; padding: 12px 16px 40px; background: var(--bg); color: var(--fg); font: 16px/1.5 -apple-system, system-ui, sans-serif; }
+    h1 { font-size: 18px; margin: 0 0 8px; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+    button, select { font-size: 16px; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--fg); }
+    button.primary { background: #0a66ff; color: #fff; border-color: #0a66ff; }
+    button:disabled { opacity: .5; }
+    label { font-size: 14px; color: var(--sub); }
+    #status { font-size: 14px; color: var(--sub); }
+    #status.ng { color: var(--ng); }
+    progress { width: 100%; height: 10px; }
+    #out { border: 1px solid var(--line); border-radius: 8px; padding: 10px; min-height: 160px; max-height: 50vh; overflow-y: auto; }
+    .final { margin: 0 0 6px; }
+    .final small { color: var(--sub); font-size: 12px; margin-left: 6px; }
+    .interim { color: var(--interim); font-style: italic; }
+    details { margin-top: 12px; font-size: 13px; }
+    pre { white-space: pre-wrap; word-break: break-all; font-size: 12px; margin: 6px 0; }
+    .ok { color: var(--ok); } .ng { color: var(--ng); } .warn { color: var(--warn); }
+    #crash { display: none; border: 1px solid var(--warn); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; font-size: 14px; }
+    a { color: #0a66ff; }
+  </style>
+</head>
+<body>
+  <h1>Moonshine Tiny Streaming テスト（端末内の音声認識）</h1>
+  <div id="crash"></div>
+  <div class="row">
+    <label>モデル <select id="arch">
+      <option value="TinyStreaming" selected>Tiny Streaming（英語、約 51MB）</option>
+      <option value="SmallStreaming">Small Streaming（英語、大きい）</option>
+    </select></label>
+  </div>
+  <div class="row">
+    <button id="load" class="primary" type="button">1. モデルを読み込む</button>
+    <button id="start" type="button" disabled>2. マイク開始</button>
+    <button id="stop" type="button" disabled>停止</button>
+    <button id="sample" type="button" disabled>サンプル音声で試す</button>
+  </div>
+  <div class="row">
+    <label><input id="realtime" type="checkbox" checked> サンプルを実時間で流す</label>
+    <button id="clear" type="button">消去</button>
+    <button id="copy" type="button">ログをコピー</button>
+    <button id="purge" type="button">モデルのキャッシュを消す</button>
+  </div>
+  <progress id="progress" max="1" value="0" hidden></progress>
+  <div id="status">待機中</div>
+  <div id="out"><div id="finals"></div><div id="interim" class="interim"></div></div>
+
+  <details open>
+    <summary>環境</summary>
+    <pre id="env"></pre>
+  </details>
+  <details open>
+    <summary>ログ（時刻はページを開いてからの秒）</summary>
+    <pre id="log"></pre>
+  </details>
+  <p style="font-size:13px"><a href="../speech.html">Web Speech API のテスト</a> ／ <a href="../">トップ</a></p>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

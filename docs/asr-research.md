@@ -154,6 +154,27 @@ PC（Windows 11、Chrome 152）での結果:
 5. 「環境」の WebGPU と shader-f16 の表示（端末内認識をやるかの判断材料）。
 6. 「ログをコピー」で結果を貼ってもらえると、次の判断に使える。
 
+## 4.2 Moonshine Tiny Streaming の PC での確認（`moonshine/`）
+
+`moonshine/index.html` に、3.1 の案 A のページを作った（2026-11-04）。
+
+- `@moonshine-ai/moonshine-wasm@0.1.5` を `moonshine/vendor/` に置く（`?cdn=1` で jsDelivr から読むこともできる）。
+- `moonshine/coi-serviceworker.js`（0.1.7）で COOP/COEP を付ける。`window.coi = { coepCredentialless: () => false }` を先に置く。Service Worker の範囲は `/moonshine/` の下だけ。
+- モデルは `download.moonshine.ai` から読む（CORS は `*`。COEP の下でも読めた）。Tiny Streaming（英語）は7ファイル、合計 約 49MB。Cache API に保存されるので2回目からは通信なし。
+- このビルドの共有メモリの上限は 4GB で、iPhone では確保できない恐れがある。iPhone では既定で上限 1GB のメモリを作って渡す（`?maxmem=1024 / 2048 / default` で変えられる）。
+- タブが落ちても前回のログが残る（localStorage）。
+
+PC（Windows 11、Chrome 152）での結果:
+
+- 1回目の訪問は crossOriginIsolated が false → Service Worker が自動で再読み込み → true。
+- 上限 1GB でも動いた。WASM 初期化 0.4s、モデル準備後の WASM メモリ 275MB（認識中 331MB）。
+- `sample_en.wav`（11秒）を実時間で流すと、各行の確定は話し終わりから 0.06〜0.43s。処理時間は音声の長さの 0.13〜0.15 倍。
+- 認識結果: "And so my fellow America," / "Ask not." / "What your country can do for you?" / "Ask what you can do for your country."（句読点あり。"Americans" が "America" になる誤りが1つ）
+- マイクは自動操作の環境では使えないので試していない。
+- ローカル確認では `python -m http.server` が Windows で `.mjs` を `text/plain` で返して読み込めないので、`serve.py` を使う（`npm run preview`）。
+
+iPhone で確かめること: `https://tomosud.github.io/iphone_trans/moonshine/` を Safari のタブで開き、(1) 環境の crossOriginIsolated が true になるか（2回目以降の訪問も）、(2) 「モデルを読み込む」が最後まで行くか、(3) 「サンプル音声で試す」の結果と処理時間の倍率、(4) マイクで認識できるか、(5) 落ちた場合は再度開いたときに出る「前回のログ」。「ログをコピー」で貼ってもらう。
+
 ## 5. 未確認のことのまとめ
 
 - iOS 26 / 27 の Safari で、Web Speech API がホーム画面の PWA で動くようになったか。iPhone での途中結果の出方、止まり方、重複の不具合。
